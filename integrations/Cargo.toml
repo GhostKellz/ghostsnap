@@ -1,0 +1,21 @@
+[package]
+name = "ghostsnap-integrations"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ghostsnap-core = { path = "../core" }
+ghostsnap-backends = { path = "../backends" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+regex = "1.11"
+uuid = { version = "1.11", features = ["v4", "serde"] }

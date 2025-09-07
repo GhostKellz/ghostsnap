@@ -1,0 +1,28 @@
+[package]
+name = "ghostsnap-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ghostsnap"
+path = "src/main.rs"
+
+[dependencies]
+ghostsnap-core = { path = "../core" }
+ghostsnap-backends = { path = "../backends" }
+ghostsnap-integrations = { path = "../integrations" }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+indicatif = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+directories = { workspace = true }
+toml = { workspace = true }
+chrono = { workspace = true }
+rpassword = "7.3"
+walkdir = { workspace = true }

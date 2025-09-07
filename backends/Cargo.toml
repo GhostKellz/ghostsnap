@@ -1,0 +1,29 @@
+[package]
+name = "ghostsnap-backends"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ghostsnap-core = { path = "../core" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+chrono = { workspace = true }
+tempfile = { workspace = true }
+azure_core = "0.21"
+azure_identity = "0.21" 
+azure_storage = "0.21"
+azure_storage_blobs = "0.21"
+md5 = { workspace = true }
+base64 = { workspace = true }
