@@ -1,7 +1,7 @@
 # Ghostsnap
 
 <div align="center">
-  <img src="assets/icons/ghostsnap-icon.png" alt="ghostsnap icon" width="128" height="128">
+  <img src="assets/ghostsnap-logo.png" alt="Ghostsnap Logo" width="128" height="128">
 
 **Backup CLI Tool for Modern Infrastructure**
 
