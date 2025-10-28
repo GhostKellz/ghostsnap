@@ -1,4 +1,5 @@
 use crate::backend::{Backend, BackendType, ObjectInfo};
+use crate::retry::{retry_with_backoff, RetryConfig};
 use async_trait::async_trait;
 use aws_config::Region;
 use aws_sdk_s3::{
@@ -8,6 +9,7 @@ use aws_sdk_s3::{
     types::{CompletedMultipartUpload, CompletedPart, StorageClass, ServerSideEncryption},
     primitives::ByteStream,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
 use ghostsnap_core::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -65,15 +67,19 @@ impl Default for MinIOConfig {
 pub struct MinIOBackend {
     client: Client,
     config: MinIOConfig,
+    #[allow(dead_code)] // Future feature: bandwidth limiting
     bandwidth_limiter: Option<BandwidthLimiter>,
+    retry_config: RetryConfig,
 }
 
+#[allow(dead_code)] // Future feature: bandwidth limiting
 struct BandwidthLimiter {
     max_bytes_per_second: f64,
     last_check: std::time::Instant,
     bytes_used: usize,
 }
 
+#[allow(dead_code)] // Future feature: bandwidth limiting
 impl BandwidthLimiter {
     fn new(mbps: f64) -> Self {
         Self {
@@ -130,10 +136,17 @@ impl MinIOBackend {
             client, 
             config: config.clone(),
             bandwidth_limiter: bandwidth_limiter.into(),
+            retry_config: RetryConfig::default(), // Use default retry config
         };
         
         backend.ensure_bucket_exists().await?;
         Ok(backend)
+    }
+    
+    /// Configure custom retry behavior
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = config;
+        self
     }
     
     pub async fn with_credentials(
@@ -153,23 +166,26 @@ impl MinIOBackend {
     }
     
     async fn ensure_bucket_exists(&self) -> Result<()> {
-        match self.client
+        let bucket = self.config.bucket.clone();
+        let client = self.client.clone();
+        
+        match client
             .head_bucket()
-            .bucket(&self.config.bucket)
+            .bucket(&bucket)
             .send()
             .await 
         {
             Ok(_) => Ok(()),
             Err(_) => {
                 // Bucket doesn't exist, try to create it
-                self.retry_operation(|| async {
-                    self.client
+                retry_with_backoff(&self.retry_config, "minio_create_bucket", || async {
+                    client
                         .create_bucket()
-                        .bucket(&self.config.bucket)
+                        .bucket(&bucket)
                         .send()
                         .await
-                }).await
-                .map_err(|e| Error::Backend(format!("Failed to create bucket: {}", e)))?;
+                        .map_err(|e| Error::Backend(format!("Failed to create bucket: {:?}", e)))
+                }).await?;
                 
                 // Configure versioning if enabled
                 if self.config.enable_versioning {
@@ -188,15 +204,18 @@ impl MinIOBackend {
             .status(BucketVersioningStatus::Enabled)
             .build();
         
-        self.retry_operation(|| async {
-            self.client
+        let bucket = self.config.bucket.clone();
+        let client = self.client.clone();
+        
+        retry_with_backoff(&self.retry_config, "minio_enable_versioning", || async {
+            client
                 .put_bucket_versioning()
-                .bucket(&self.config.bucket)
+                .bucket(&bucket)
                 .versioning_configuration(versioning_config.clone())
                 .send()
                 .await
-        }).await
-        .map_err(|e| Error::Backend(format!("Failed to enable versioning: {}", e)))?;
+                .map_err(|e| Error::Backend(format!("Failed to enable versioning: {:?}", e)))
+        }).await?;
         
         Ok(())
     }
@@ -209,128 +228,87 @@ impl MinIOBackend {
         }
     }
     
-    async fn retry_operation<F, Fut, T, E>(&self, operation: F) -> Result<T>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = std::result::Result<T, E>>,
-        T: std::fmt::Debug,
-        E: std::fmt::Debug,
-    {
-        let mut last_error = None;
-        
-        for attempt in 0..=self.config.retry_attempts {
-            match operation().await {
-                Ok(result) => return Ok(result),
-                Err(e) => {
-                    last_error = Some(format!("{:?}", e));
-                    if attempt < self.config.retry_attempts {
-                        let delay = self.config.retry_delay_ms * (2_u64.pow(attempt));
-                        sleep(Duration::from_millis(delay)).await;
-                    }
-                }
-            }
-        }
-        
-        Err(Error::Backend(format!(
-            "Operation failed after {} attempts: {}",
-            self.config.retry_attempts + 1,
-            last_error.unwrap_or_else(|| "Unknown error".to_string())
-        )))
+    // Note: Bandwidth throttling not yet implemented
+    // Will be enabled in future version with interior mutability pattern
+    #[allow(dead_code)]
+    async fn throttle_if_needed(&self, _bytes: usize) {
+        // TODO: Implement with Mutex<BandwidthLimiter> for interior mutability
     }
     
-    async fn throttle_if_needed(&mut self, bytes: usize) {
-        if let Some(ref mut limiter) = self.bandwidth_limiter {
-            limiter.throttle(bytes).await;
-        }
-    }
-    
-    async fn simple_upload(&mut self, path: &str, data: Bytes) -> Result<PutObjectOutput> {
+    #[allow(dead_code)] // Used when multipart threshold is set very high
+    async fn simple_upload(&self, path: &str, data: Bytes) -> Result<PutObjectOutput> {
         let data_len = data.len();
         self.throttle_if_needed(data_len).await;
         
         let data_clone = data.clone();
-        let mut request = self.client
-            .put_object()
-            .bucket(&self.config.bucket)
-            .key(self.full_key(path))
-            .body(ByteStream::from(data_clone.clone()));
-        
-        if let Some(ref storage_class) = self.config.storage_class {
-            if let Ok(sc) = storage_class.parse::<StorageClass>() {
-                request = request.storage_class(sc);
-            }
-        }
-        
-        if let Some(ref sse) = self.config.server_side_encryption {
-            if let Ok(encryption) = sse.parse::<ServerSideEncryption>() {
-                request = request.server_side_encryption(encryption);
-            }
-        }
-        
-        if self.config.enable_checksums {
-            // Enable MD5 checksum validation
-            request = request.content_md5(
-                base64::encode(md5::compute(&data_clone).as_ref())
-            );
-        }
-        
         let bucket = self.config.bucket.clone();
         let key = self.full_key(path);
+        let storage_class = self.config.storage_class.clone();
+        let server_side_encryption = self.config.server_side_encryption.clone();
+        let enable_checksums = self.config.enable_checksums;
+        let client = self.client.clone();
         
-        self.retry_operation(|| async {
-            let mut req = self.client
+        retry_with_backoff(&self.retry_config, "minio_simple_upload", || async {
+            let mut req = client
                 .put_object()
                 .bucket(&bucket)
                 .key(&key)
                 .body(ByteStream::from(data_clone.clone()));
             
-            if let Some(ref storage_class) = self.config.storage_class {
-                if let Ok(sc) = storage_class.parse::<StorageClass>() {
-                    req = req.storage_class(sc);
-                }
+            if let Some(ref storage_class) = storage_class {
+                // Parse is infallible for AWS SDK enums, so we can match directly
+                let sc = storage_class.parse::<StorageClass>().unwrap();
+                req = req.storage_class(sc);
             }
             
-            if let Some(ref sse) = self.config.server_side_encryption {
-                if let Ok(encryption) = sse.parse::<ServerSideEncryption>() {
-                    req = req.server_side_encryption(encryption);
-                }
+            if let Some(ref sse) = server_side_encryption {
+                // Parse is infallible for AWS SDK enums, so we can directly unwrap
+                let encryption = sse.parse::<ServerSideEncryption>().unwrap();
+                req = req.server_side_encryption(encryption);
             }
             
-            if self.config.enable_checksums {
-                req = req.content_md5(base64::encode(md5::compute(&data_clone).as_ref()));
+            if enable_checksums {
+                req = req.content_md5(BASE64.encode(md5::compute(&data_clone).as_ref()));
             }
             
             req.send().await
+                .map_err(|e| Error::Backend(format!("Failed to upload: {:?}", e)))
         }).await
     }
     
-    async fn multipart_upload(&mut self, path: &str, data: Bytes) -> Result<()> {
+    async fn multipart_upload(&self, path: &str, data: Bytes) -> Result<()> {
         let key = self.full_key(path);
+        let bucket = self.config.bucket.clone();
+        let client = self.client.clone();
+        let storage_class = self.config.storage_class.clone();
+        let server_side_encryption = self.config.server_side_encryption.clone();
         
         // Initiate multipart upload
-        let create_response = self.retry_operation(|| async {
-            let mut request = self.client
+        let create_response = retry_with_backoff(&self.retry_config, "minio_create_multipart", || async {
+            let mut request = client
                 .create_multipart_upload()
-                .bucket(&self.config.bucket)
+                .bucket(&bucket)
                 .key(&key);
             
-            if let Some(ref storage_class) = self.config.storage_class {
-                if let Ok(sc) = storage_class.parse::<StorageClass>() {
-                    request = request.storage_class(sc);
-                }
+            if let Some(ref storage_class) = storage_class {
+                // Parse is infallible for AWS SDK enums, so we can directly unwrap
+                let sc = storage_class.parse::<StorageClass>().unwrap();
+                request = request.storage_class(sc);
             }
-            
-            if let Some(ref sse) = self.config.server_side_encryption {
-                if let Ok(encryption) = sse.parse::<ServerSideEncryption>() {
-                    request = request.server_side_encryption(encryption);
-                }
+
+            if let Some(ref sse) = server_side_encryption {
+                // Parse is infallible for AWS SDK enums, so we can directly unwrap
+                let encryption = sse.parse::<ServerSideEncryption>().unwrap();
+                request = request.server_side_encryption(encryption);
             }
             
             request.send().await
+                .map_err(|e| Error::Backend(format!("Failed to create multipart upload: {:?}", e)))
         }).await?;
         
         let upload_id = create_response.upload_id()
-            .ok_or_else(|| Error::Backend("No upload ID returned".to_string()))?;
+            .ok_or_else(|| Error::Backend("No upload ID returned".to_string()))?
+            .to_string();
         
         // Upload parts
         let chunks: Vec<_> = data
@@ -345,22 +323,29 @@ impl MinIOBackend {
             let chunk_len = chunk_data.len();
             self.throttle_if_needed(chunk_len).await;
             
-            let part_response = self.retry_operation(|| async {
-                let mut request = self.client
+            let upload_id_clone = upload_id.clone();
+            let bucket_clone = bucket.clone();
+            let key_clone = key.clone();
+            let client_clone = client.clone();
+            let enable_checksums = self.config.enable_checksums;
+            
+            let part_response = retry_with_backoff(&self.retry_config, "minio_upload_part", || async {
+                let mut request = client_clone
                     .upload_part()
-                    .bucket(&self.config.bucket)
-                    .key(&key)
-                    .upload_id(upload_id)
+                    .bucket(&bucket_clone)
+                    .key(&key_clone)
+                    .upload_id(&upload_id_clone)
                     .part_number(part_number as i32)
                     .body(ByteStream::from(chunk_data.clone()));
                 
-                if self.config.enable_checksums {
+                if enable_checksums {
                     request = request.content_md5(
-                        base64::encode(md5::compute(&chunk_data).as_ref())
+                        BASE64.encode(md5::compute(&chunk_data).as_ref())
                     );
                 }
                 
                 request.send().await
+                    .map_err(|e| Error::Backend(format!("Failed to upload part: {:?}", e)))
             }).await?;
             
             let completed_part = CompletedPart::builder()
@@ -376,15 +361,16 @@ impl MinIOBackend {
             .set_parts(Some(completed_parts))
             .build();
         
-        self.retry_operation(|| async {
-            self.client
+        retry_with_backoff(&self.retry_config, "minio_complete_multipart", || async {
+            client
                 .complete_multipart_upload()
-                .bucket(&self.config.bucket)
+                .bucket(&bucket)
                 .key(&key)
-                .upload_id(upload_id)
+                .upload_id(&upload_id)
                 .multipart_upload(completed_upload.clone())
                 .send()
                 .await
+                .map_err(|e| Error::Backend(format!("Failed to complete multipart upload: {:?}", e)))
         }).await?;
         
         Ok(())
@@ -450,13 +436,18 @@ impl Backend for MinIOBackend {
     }
     
     async fn exists(&self, path: &str) -> Result<bool> {
-        match self.retry_operation(|| async {
-            self.client
+        let bucket = self.config.bucket.clone();
+        let key = self.full_key(path);
+        let client = self.client.clone();
+        
+        match retry_with_backoff(&self.retry_config, "minio_exists", || async {
+            client
                 .head_object()
-                .bucket(&self.config.bucket)
-                .key(self.full_key(path))
+                .bucket(&bucket)
+                .key(&key)
                 .send()
                 .await
+                .map_err(|e| Error::Backend(format!("Failed to check existence: {:?}", e)))
         }).await {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
@@ -464,15 +455,19 @@ impl Backend for MinIOBackend {
     }
     
     async fn read(&self, path: &str) -> Result<Bytes> {
-        let response = self.retry_operation(|| async {
-            self.client
+        let bucket = self.config.bucket.clone();
+        let key = self.full_key(path);
+        let client = self.client.clone();
+        
+        let response = retry_with_backoff(&self.retry_config, "minio_read", || async {
+            client
                 .get_object()
-                .bucket(&self.config.bucket)
-                .key(self.full_key(path))
+                .bucket(&bucket)
+                .key(&key)
                 .send()
                 .await
-        }).await
-        .map_err(|e| Error::Backend(format!("Failed to read object {}: {}", path, e)))?;
+                .map_err(|e| Error::Backend(format!("Failed to read object {}: {:?}", path, e)))
+        }).await?;
         
         let data = response.body.collect().await
             .map_err(|e| Error::Backend(format!("Failed to collect object data: {}", e)))?;
@@ -483,39 +478,50 @@ impl Backend for MinIOBackend {
     async fn write(&self, path: &str, data: Bytes) -> Result<()> {
         let data_len = data.len();
         
-        // Simplified implementation without bandwidth limiting for now
+        // Use multipart upload for large files
         if data_len >= self.config.multipart_threshold {
-            // For now, use simple upload for all files
-            tracing::warn!("Multipart upload not fully implemented, using simple upload");
+            tracing::debug!(
+                "Using multipart upload for {} bytes (threshold: {} bytes)",
+                data_len,
+                self.config.multipart_threshold
+            );
+            return self.multipart_upload(path, data).await;
         }
         
-        // Use simple upload
+        // Use simple upload for small files
+        tracing::debug!("Using simple upload for {} bytes", data_len);
         let bucket = self.config.bucket.clone();
         let key = self.full_key(path);
+        let client = self.client.clone();
         
-        self.retry_operation(|| async {
-            self.client
+        retry_with_backoff(&self.retry_config, "minio_write", || async {
+            client
                 .put_object()
                 .bucket(&bucket)
                 .key(&key)
                 .body(ByteStream::from(data.clone()))
                 .send()
                 .await
+                .map_err(|e| Error::Backend(format!("Failed to write object: {:?}", e)))
         }).await?;
         
         Ok(())
     }
     
     async fn delete(&self, path: &str) -> Result<()> {
-        self.retry_operation(|| async {
-            self.client
+        let bucket = self.config.bucket.clone();
+        let key = self.full_key(path);
+        let client = self.client.clone();
+        
+        retry_with_backoff(&self.retry_config, "minio_delete", || async {
+            client
                 .delete_object()
-                .bucket(&self.config.bucket)
-                .key(self.full_key(path))
+                .bucket(&bucket)
+                .key(&key)
                 .send()
                 .await
-        }).await
-        .map_err(|e| Error::Backend(format!("Failed to delete object {}: {}", path, e)))?;
+                .map_err(|e| Error::Backend(format!("Failed to delete object {}: {:?}", path, e)))
+        }).await?;
         
         Ok(())
     }
@@ -563,15 +569,19 @@ impl Backend for MinIOBackend {
     }
     
     async fn stat(&self, path: &str) -> Result<ObjectInfo> {
-        let response = self.retry_operation(|| async {
-            self.client
+        let bucket = self.config.bucket.clone();
+        let key = self.full_key(path);
+        let client = self.client.clone();
+        
+        let response = retry_with_backoff(&self.retry_config, "minio_stat", || async {
+            client
                 .head_object()
-                .bucket(&self.config.bucket)
-                .key(self.full_key(path))
+                .bucket(&bucket)
+                .key(&key)
                 .send()
                 .await
-        }).await
-        .map_err(|e| Error::Backend(format!("Failed to stat object {}: {}", path, e)))?;
+                .map_err(|e| Error::Backend(format!("Failed to stat object {}: {:?}", path, e)))
+        }).await?;
         
         let size = response.content_length().unwrap_or(0) as u64;
         let modified = response.last_modified()

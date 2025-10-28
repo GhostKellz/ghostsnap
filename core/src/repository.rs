@@ -7,14 +7,77 @@ use tokio::fs;
 use serde::{Serialize, Deserialize};
 use bytes::Bytes;
 
+/// The main repository structure for Ghostsnap backups.
+///
+/// A repository manages all backup data including snapshots, pack files, indices, and encryption keys.
+/// It provides thread-safe access to backup operations through asynchronous methods.
+///
+/// # Repository Structure
+///
+/// ```text
+/// repository/
+/// ├── config          # Repository configuration
+/// ├── keys/           # Encrypted data keys
+/// ├── data/           # Pack files and tree objects
+/// ├── index/          # Chunk location index
+/// ├── snapshots/      # Snapshot metadata
+/// └── locks/          # Repository locks
+/// ```
+///
+/// # Examples
+///
+/// ```no_run
+/// use ghostsnap_core::Repository;
+///
+/// #[tokio::main]
+/// async fn main() -> ghostsnap_core::Result<()> {
+///     // Initialize a new repository
+///     let repo = Repository::init("./backup-repo", "my-password").await?;
+///
+///     // Open an existing repository
+///     let repo = Repository::open("./backup-repo", "my-password").await?;
+///
+///     Ok(())
+/// }
+/// ```
 pub struct Repository {
     path: PathBuf,
     config: RepoConfig,
+    #[allow(dead_code)] // Used for key rotation in future
     master_key: Option<MasterKey>,
     encryptor: Option<Encryptor>,
 }
 
 impl Repository {
+    /// Initializes a new repository at the given path.
+    ///
+    /// This creates the repository directory structure, generates encryption keys,
+    /// and stores the encrypted configuration. The repository is immediately ready for use.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The filesystem path where the repository should be created
+    /// * `password` - The master password used to encrypt the repository's data keys
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Repository` instance ready for backup operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::RepositoryExists` if a repository already exists at the path.
+    /// Returns `Error::Io` if filesystem operations fail.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use ghostsnap_core::Repository;
+    /// # #[tokio::main]
+    /// # async fn main() -> ghostsnap_core::Result<()> {
+    /// let repo = Repository::init("./my-backups", "strong-password").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn init<P: AsRef<Path>>(path: P, password: &str) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         
@@ -68,6 +131,35 @@ impl Repository {
         })
     }
     
+    /// Opens an existing repository.
+    ///
+    /// Loads the repository configuration and decrypts the data keys using the provided password.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The filesystem path to the repository
+    /// * `password` - The master password for decrypting the repository keys
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Repository` instance ready for operations.
+    ///
+    /// # Errors
+    ///
+    /// * `Error::RepositoryNotFound` - Repository doesn't exist at the path
+    /// * `Error::InvalidPassword` - Incorrect password provided
+    /// * `Error::InvalidFormatVersion` - Unsupported repository version
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use ghostsnap_core::Repository;
+    /// # #[tokio::main]
+    /// # async fn main() -> ghostsnap_core::Result<()> {
+    /// let repo = Repository::open("./my-backups", "strong-password").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn open<P: AsRef<Path>>(path: P, password: &str) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         

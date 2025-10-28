@@ -565,6 +565,193 @@ impl HestiaIntegration {
         
         Ok(backup_dir)
     }
+    
+    // ========== Wrapper Methods for HestiaCP Native Commands ==========
+    
+    /// Execute HestiaCP's native v-backup-user command
+    pub async fn execute_hestia_backup(&self, username: &str) -> Result<PathBuf> {
+        info!("Executing HestiaCP native backup for user: {}", username);
+        
+        // Check if user exists first
+        let user_conf = self.hestia_path.join(format!("data/users/{}/user.conf", username));
+        if !user_conf.exists() {
+            return Err(Error::Other(format!(
+                "User '{}' does not exist in HestiaCP", 
+                username
+            )));
+        }
+        
+        // Execute v-backup-user command
+        let output = Command::new("v-backup-user")
+            .arg(username)
+            .output()
+            .await
+            .map_err(|e| Error::Other(format!(
+                "Failed to execute v-backup-user: {}. Is HestiaCP installed?", 
+                e
+            )))?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Other(format!(
+                "HestiaCP backup failed for user '{}': {}", 
+                username, 
+                stderr
+            )));
+        }
+        
+        info!("HestiaCP backup command completed successfully for user: {}", username);
+        
+        // Wait a moment for filesystem to settle
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        
+        // Find and return the created backup tarball
+        self.find_latest_backup_tarball(username).await
+    }
+    
+    /// Find the most recent backup tarball for a user
+    async fn find_latest_backup_tarball(&self, username: &str) -> Result<PathBuf> {
+        let backup_dir = PathBuf::from("/backup");
+        
+        if !backup_dir.exists() {
+            return Err(Error::Other(
+                "Backup directory /backup does not exist".to_string()
+            ));
+        }
+        
+        let mut entries = fs::read_dir(&backup_dir).await
+            .map_err(|e| Error::Other(format!(
+                "Cannot read backup directory: {}", 
+                e
+            )))?;
+        
+        let mut latest: Option<(PathBuf, std::time::SystemTime)> = None;
+        
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let filename = entry.file_name();
+            let filename_str = filename.to_string_lossy();
+            
+            // Match HestiaCP backup pattern: username.YYYY-MM-DD_HH-MM-SS.tar
+            if filename_str.starts_with(&format!("{}.", username)) && filename_str.ends_with(".tar") {
+                if let Ok(metadata) = entry.metadata().await {
+                    if let Ok(modified) = metadata.modified() {
+                        match latest {
+                            None => latest = Some((path, modified)),
+                            Some((_, latest_time)) if modified > latest_time => {
+                                latest = Some((path, modified));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        
+        latest
+            .map(|(path, _)| path)
+            .ok_or_else(|| Error::Other(format!(
+                "No backup tarball found for user '{}' in /backup/", 
+                username
+            )))
+    }
+    
+    /// List all HestiaCP users (simple version using filesystem)
+    pub async fn list_users_simple(&self) -> Result<Vec<String>> {
+        let users_dir = self.hestia_path.join("data/users");
+        
+        if !users_dir.exists() {
+            return Err(Error::Other(
+                "HestiaCP users directory not found. Is HestiaCP installed?".to_string()
+            ));
+        }
+        
+        let mut entries = fs::read_dir(&users_dir).await?;
+        let mut users = Vec::new();
+        
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                if let Some(username) = entry.file_name().to_str() {
+                    // Skip hidden directories and certain system entries
+                    if !username.starts_with('.') && username != "history" {
+                        users.push(username.to_string());
+                    }
+                }
+            }
+        }
+        
+        users.sort();
+        Ok(users)
+    }
+    
+    /// Get basic user information
+    pub async fn get_user_info(&self, username: &str) -> Result<HestiaUser> {
+        // Reuse the existing parse_user_config method
+        self.parse_user_config(username).await
+    }
+    
+    /// Clean up old backup tarballs, keeping only the N most recent
+    pub async fn cleanup_old_backups(&self, username: Option<&str>, keep_count: usize) -> Result<usize> {
+        let backup_dir = PathBuf::from("/backup");
+        
+        if !backup_dir.exists() {
+            return Ok(0);
+        }
+        
+        let mut entries = fs::read_dir(&backup_dir).await?;
+        let mut backups: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let filename = entry.file_name();
+            let filename_str = filename.to_string_lossy();
+            
+            // Match backup tarballs
+            let matches = if let Some(user) = username {
+                filename_str.starts_with(&format!("{}.", user)) && filename_str.ends_with(".tar")
+            } else {
+                filename_str.ends_with(".tar")
+            };
+            
+            if matches {
+                if let Ok(metadata) = entry.metadata().await {
+                    if let Ok(modified) = metadata.modified() {
+                        backups.push((path, modified));
+                    }
+                }
+            }
+        }
+        
+        // Sort by modification time (newest first)
+        backups.sort_by(|a, b| b.1.cmp(&a.1));
+        
+        // Remove old backups beyond keep_count
+        let mut removed_count = 0;
+        for (path, _) in backups.iter().skip(keep_count) {
+            match fs::remove_file(path).await {
+                Ok(_) => {
+                    info!("Removed old backup: {}", path.display());
+                    removed_count += 1;
+                }
+                Err(e) => {
+                    warn!("Failed to remove backup {}: {}", path.display(), e);
+                }
+            }
+        }
+        
+        Ok(removed_count)
+    }
+    
+    /// Get backup tarball size in bytes
+    pub async fn get_backup_size(&self, tarball_path: &Path) -> Result<u64> {
+        let metadata = fs::metadata(tarball_path).await
+            .map_err(|e| Error::Other(format!(
+                "Cannot read backup file metadata: {}", 
+                e
+            )))?;
+        
+        Ok(metadata.len())
+    }
 }
 
 use uuid;

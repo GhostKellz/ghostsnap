@@ -1,4 +1,5 @@
 use crate::backend::{Backend, BackendType, ObjectInfo};
+use crate::retry::{retry_with_backoff, RetryConfig};
 use async_trait::async_trait;
 use azure_core::auth::TokenCredential;
 use azure_identity::{DefaultAzureCredential, ClientSecretCredential};
@@ -70,6 +71,7 @@ impl Default for AzureBlobConfig {
 pub struct AzureBlobBackend {
     client: BlobServiceClient,
     config: AzureBlobConfig,
+    retry_config: RetryConfig,
 }
 
 impl AzureBlobBackend {
@@ -77,9 +79,19 @@ impl AzureBlobBackend {
         let credentials = Self::create_credentials(&config.auth).await?;
         let client = BlobServiceClient::new(&Self::extract_account_name(&config.auth), credentials);
         
-        let backend = Self { client, config };
+        let backend = Self { 
+            client, 
+            config,
+            retry_config: RetryConfig::default(),
+        };
         backend.ensure_container_exists().await?;
         Ok(backend)
+    }
+    
+    /// Configure custom retry behavior
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = config;
+        self
     }
     
     pub async fn with_connection_string(
@@ -210,38 +222,12 @@ impl AzureBlobBackend {
         container_client.blob_client(self.full_blob_name(path))
     }
     
-    async fn retry_operation<F, Fut, T>(&self, operation: F) -> Result<T>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = azure_core::Result<T>>,
-    {
-        let mut last_error = None;
-        
-        for attempt in 0..=self.config.retry_attempts {
-            match operation().await {
-                Ok(result) => return Ok(result),
-                Err(e) => {
-                    last_error = Some(e);
-                    if attempt < self.config.retry_attempts {
-                        let delay = self.config.retry_delay_ms * (2_u64.pow(attempt));
-                        tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
-                    }
-                }
-            }
-        }
-        
-        Err(Error::Backend(format!(
-            "Operation failed after {} attempts: {:?}",
-            self.config.retry_attempts + 1,
-            last_error
-        )))
-    }
-    
     pub async fn set_blob_tier(&self, path: &str, tier: AccessTier) -> Result<()> {
         let blob_client = self.blob_client(path);
         
-        self.retry_operation(|| async {
+        retry_with_backoff(&self.retry_config, "azure_set_blob_tier", || async {
             blob_client.set_tier(tier).await
+                .map_err(|e| Error::Backend(format!("Failed to set blob tier: {:?}", e)))
         }).await?;
         
         Ok(())
@@ -250,8 +236,9 @@ impl AzureBlobBackend {
     pub async fn get_blob_metadata(&self, path: &str) -> Result<std::collections::HashMap<String, String>> {
         let blob_client = self.blob_client(path);
         
-        let properties = self.retry_operation(|| async {
+        let properties = retry_with_backoff(&self.retry_config, "azure_get_metadata", || async {
             blob_client.get_properties().await
+                .map_err(|e| Error::Backend(format!("Failed to get blob properties: {:?}", e)))
         }).await?;
         
         Ok(properties.blob.metadata)
@@ -262,8 +249,9 @@ impl AzureBlobBackend {
         
         if data.len() <= self.config.chunk_size {
             // Single upload for small files
-            self.retry_operation(|| async {
+            retry_with_backoff(&self.retry_config, "azure_single_upload", || async {
                 blob_client.put_block_blob(data.clone()).await
+                    .map_err(|e| Error::Backend(format!("Failed to upload blob: {:?}", e)))
             }).await?;
         } else {
             // Multipart upload for large files
@@ -275,15 +263,17 @@ impl AzureBlobBackend {
             
             // Upload blocks
             for (block_id, chunk_data) in &chunks {
-                self.retry_operation(|| async {
+                retry_with_backoff(&self.retry_config, "azure_upload_block", || async {
                     blob_client.put_block(block_id.clone(), chunk_data.clone()).await
+                        .map_err(|e| Error::Backend(format!("Failed to upload block: {:?}", e)))
                 }).await?;
             }
             
             // Commit blocks
             let block_list: Vec<_> = chunks.iter().map(|(id, _)| id.clone()).collect();
-            self.retry_operation(|| async {
+            retry_with_backoff(&self.retry_config, "azure_commit_blocks", || async {
                 blob_client.put_block_list(block_list.clone()).await
+                    .map_err(|e| Error::Backend(format!("Failed to commit blocks: {:?}", e)))
             }).await?;
         }
         
@@ -305,8 +295,9 @@ impl Backend for AzureBlobBackend {
     async fn exists(&self, path: &str) -> Result<bool> {
         let blob_client = self.blob_client(path);
         
-        match self.retry_operation(|| async {
+        match retry_with_backoff(&self.retry_config, "azure_exists", || async {
             blob_client.get_properties().await
+                .map_err(|e| Error::Backend(format!("Failed to check existence: {:?}", e)))
         }).await {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
@@ -316,10 +307,10 @@ impl Backend for AzureBlobBackend {
     async fn read(&self, path: &str) -> Result<Bytes> {
         let blob_client = self.blob_client(path);
         
-        let response = self.retry_operation(|| async {
+        let response = retry_with_backoff(&self.retry_config, "azure_read", || async {
             blob_client.get().await
-        }).await
-        .map_err(|e| Error::Backend(format!("Failed to read blob {}: {}", path, e)))?;
+                .map_err(|e| Error::Backend(format!("Failed to read blob {}: {:?}", path, e)))
+        }).await?;
         
         let data = response.data.collect().await
             .map_err(|e| Error::Backend(format!("Failed to collect blob data: {}", e)))?;
@@ -334,10 +325,10 @@ impl Backend for AzureBlobBackend {
     async fn delete(&self, path: &str) -> Result<()> {
         let blob_client = self.blob_client(path);
         
-        self.retry_operation(|| async {
+        retry_with_backoff(&self.retry_config, "azure_delete", || async {
             blob_client.delete().await
-        }).await
-        .map_err(|e| Error::Backend(format!("Failed to delete blob {}: {}", path, e)))?;
+                .map_err(|e| Error::Backend(format!("Failed to delete blob {}: {:?}", path, e)))
+        }).await?;
         
         Ok(())
     }
@@ -374,10 +365,10 @@ impl Backend for AzureBlobBackend {
     async fn stat(&self, path: &str) -> Result<ObjectInfo> {
         let blob_client = self.blob_client(path);
         
-        let properties = self.retry_operation(|| async {
+        let properties = retry_with_backoff(&self.retry_config, "azure_stat", || async {
             blob_client.get_properties().await
-        }).await
-        .map_err(|e| Error::Backend(format!("Failed to stat blob {}: {}", path, e)))?;
+                .map_err(|e| Error::Backend(format!("Failed to stat blob {}: {:?}", path, e)))
+        }).await?;
         
         let size = properties.blob.properties.content_length;
         let modified = properties.blob.properties.last_modified;

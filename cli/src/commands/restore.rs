@@ -31,8 +31,25 @@ impl RestoreCommand {
         info!("Opening repository at: {}", repo_path);
         let repo = Repository::open(repo_path, &password).await?;
 
-        info!("Loading snapshot: {}", snapshot_id);
-        let snapshot = repo.load_snapshot(&snapshot_id).await?;
+        // Support short snapshot IDs - find the full ID if a short one was provided
+        let full_snapshot_id = if snapshot_id.len() < 36 {
+            // This is a short ID, find the matching full ID
+            let all_snapshots = repo.list_snapshots().await?;
+            let matches: Vec<_> = all_snapshots.iter()
+                .filter(|id| id.starts_with(&snapshot_id))
+                .collect();
+
+            match matches.len() {
+                0 => return Err(anyhow!("No snapshot found with ID starting with '{}'", snapshot_id)),
+                1 => matches[0].clone(),
+                _ => return Err(anyhow!("Ambiguous snapshot ID '{}' - matches {} snapshots", snapshot_id, matches.len())),
+            }
+        } else {
+            snapshot_id
+        };
+
+        info!("Loading snapshot: {}", full_snapshot_id);
+        let snapshot = repo.load_snapshot(&full_snapshot_id).await?;
 
         let target_path = PathBuf::from(target);
         if !target_path.exists() {

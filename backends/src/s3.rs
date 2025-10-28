@@ -1,7 +1,8 @@
 use crate::backend::{Backend, BackendType, ObjectInfo};
+use crate::retry::{RetryConfig, retry_with_backoff};
 use async_trait::async_trait;
 use aws_config::BehaviorVersion;
-use aws_sdk_s3::{Client, Error as S3Error};
+use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
 use bytes::Bytes;
 use ghostsnap_core::{Error, Result};
@@ -10,6 +11,7 @@ pub struct S3Backend {
     client: Client,
     bucket: String,
     prefix: String,
+    retry_config: RetryConfig,
 }
 
 impl S3Backend {
@@ -21,11 +23,12 @@ impl S3Backend {
             client,
             bucket,
             prefix,
+            retry_config: RetryConfig::default(),
         })
     }
     
     pub async fn with_endpoint(bucket: String, prefix: String, endpoint: String) -> Result<Self> {
-        let config = aws_config::from_env()
+        let config = aws_config::defaults(BehaviorVersion::latest())
             .endpoint_url(endpoint)
             .load()
             .await;
@@ -35,7 +38,13 @@ impl S3Backend {
             client,
             bucket,
             prefix,
+            retry_config: RetryConfig::default(),
         })
+    }
+
+    pub fn with_retry_config(mut self, retry_config: RetryConfig) -> Self {
+        self.retry_config = retry_config;
+        self
     }
     
     fn full_key(&self, path: &str) -> String {
@@ -80,33 +89,49 @@ impl Backend for S3Backend {
     }
     
     async fn read(&self, path: &str) -> Result<Bytes> {
-        let response = self.client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(self.full_key(path))
-            .send()
-            .await
-            .map_err(|e| Error::Backend(format!("Failed to read {}: {}", path, e)))?;
+        let client = self.client.clone();
+        let bucket = self.bucket.clone();
+        let key = self.full_key(path);
+        let path_copy = path.to_string();
         
-        let data = response.body.collect().await
-            .map_err(|e| Error::Backend(format!("Failed to read body: {}", e)))?;
-        
-        Ok(data.into_bytes())
+        retry_with_backoff(&self.retry_config, "s3_read", || async {
+            let response = client
+                .get_object()
+                .bucket(&bucket)
+                .key(&key)
+                .send()
+                .await
+                .map_err(|e| Error::Backend(format!("Failed to read {}: {}", path_copy, e)))?;
+            
+            let data = response.body.collect().await
+                .map_err(|e| Error::Backend(format!("Failed to read body: {}", e)))?;
+            
+            Ok(data.into_bytes())
+        })
+        .await
     }
     
     async fn write(&self, path: &str, data: Bytes) -> Result<()> {
-        let body = ByteStream::from(data.to_vec());
+        let client = self.client.clone();
+        let bucket = self.bucket.clone();
+        let key = self.full_key(path);
+        let path_copy = path.to_string();
         
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(self.full_key(path))
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| Error::Backend(format!("Failed to write {}: {}", path, e)))?;
-        
-        Ok(())
+        retry_with_backoff(&self.retry_config, "s3_write", || async {
+            let body = ByteStream::from(data.to_vec());
+            
+            client
+                .put_object()
+                .bucket(&bucket)
+                .key(&key)
+                .body(body)
+                .send()
+                .await
+                .map_err(|e| Error::Backend(format!("Failed to write {}: {}", path_copy, e)))?;
+            
+            Ok(())
+        })
+        .await
     }
     
     async fn delete(&self, path: &str) -> Result<()> {

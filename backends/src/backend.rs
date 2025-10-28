@@ -1,6 +1,5 @@
 use async_trait::async_trait;
-use ghostsnap_core::{Result, Error};
-use std::path::Path;
+use ghostsnap_core::Result;
 use bytes::Bytes;
 
 #[derive(Debug, Clone)]

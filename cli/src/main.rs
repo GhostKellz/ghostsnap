@@ -97,12 +97,12 @@ async fn main() -> Result<()> {
     
     info!("Starting Ghostsnap");
     
-    match &cli.command {
-        Commands::Init(cmd) => cmd.run(&cli).await,
-        Commands::Backup(cmd) => cmd.run(&cli).await,
-        Commands::Snapshots(cmd) => cmd.run(&cli).await,
-        Commands::Hestia(cmd) => cmd.run(&cli).await,
-        Commands::Restore { snapshot_id, target, paths } => {
+    match cli.command {
+        Commands::Init(ref cmd) => cmd.run(&cli).await,
+        Commands::Backup(ref cmd) => cmd.run(&cli).await,
+        Commands::Snapshots(ref cmd) => cmd.run(&cli).await,
+        Commands::Hestia(ref cmd) => cmd.run(&cli).await,
+        Commands::Restore { ref snapshot_id, ref target, ref paths } => {
             RestoreCommand::run(snapshot_id.clone(), target.clone(), paths.clone(), &cli).await
         },
         Commands::Stats => {
@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
             println!("Forget not yet implemented");
             Ok(())
         },
-        Commands::Ls { snapshot_id, path } => {
+        Commands::Ls { snapshot_id: _, path: _ } => {
             println!("Ls not yet implemented");
             Ok(())
         },

@@ -79,15 +79,31 @@ ghostsnap restore s3:minio/ghost-backups --tag=domain.com --target=/restore/path
 
 ## Roadmap
 
-* [ ] Core backup/restore engine
-* [ ] MinIO + S3-compatible support
-* [ ] HestiaCP integration module
-* [ ] Encryption layer (AES-GCM / ChaCha20-Poly1305)
-* [ ] Deduplication engine
-* [ ] Scheduling helpers (systemd timers)
-* [ ] Web dashboard (optional)
+**Current Status: Alpha (v0.1.0) → RC1 (v0.9.0)**
 
-See [TODO.md](TODO.md) for a detailed breakdown.
+### Completed ✅
+* [x] Core cryptography (ChaCha20-Poly1305, BLAKE3, Argon2)
+* [x] Content-defined chunking (FastCDC)
+* [x] Repository structure and configuration
+* [x] Basic CLI scaffolding
+* [x] Backend abstraction layer
+
+### In Progress 🚧
+* [ ] Complete backup/restore implementation
+* [ ] Pack management system
+* [ ] Index optimization
+* [ ] Backend integrations (S3, Azure, MinIO)
+* [ ] Comprehensive testing
+
+### Planned for RC1 📋
+* [ ] HestiaCP integration
+* [ ] Full documentation
+* [ ] Security audit
+* [ ] Performance optimization
+* [ ] Binary releases (Linux, macOS, Windows)
+* [ ] Beta testing program
+
+**📚 For detailed roadmap see**: [TODO.md](TODO.md), [RC1_SUMMARY.md](RC1_SUMMARY.md), [QUICK_START_RC1.md](QUICK_START_RC1.md), [PRIORITY_MATRIX.md](PRIORITY_MATRIX.md)
 
 ---
 

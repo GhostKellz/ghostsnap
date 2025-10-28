@@ -77,13 +77,13 @@ impl BackupCommand {
         
         let mut total_files = 0;
         let mut total_size = 0u64;
-        let mut tree_nodes = Vec::new();
-        
+        let mut file_list = Vec::new(); // Store (PathBuf, TreeNode) pairs
+
         for path in &paths {
             if !path.exists() {
                 return Err(anyhow!("Path does not exist: {}", path.display()));
             }
-            
+
             for entry in WalkDir::new(path)
                 .follow_links(false)
                 .into_iter()
@@ -92,35 +92,40 @@ impl BackupCommand {
                 if self.should_exclude(&entry.path()) {
                     continue;
                 }
-                
+
                 let metadata = entry.metadata()?;
-                let file_path = entry.path();
-                
+                let file_path = entry.path().to_path_buf();
+
                 if metadata.is_file() {
                     total_files += 1;
                     total_size += metadata.len();
-                    
+
                     let relative_path = file_path.strip_prefix(path)
-                        .unwrap_or(file_path);
-                    
+                        .unwrap_or(&file_path);
+
                     debug!("Found file: {}", relative_path.display());
-                    
+
+                    #[cfg(unix)]
+                    let mode = {
+                        use std::os::unix::fs::PermissionsExt;
+                        metadata.permissions().mode()
+                    };
+                    #[cfg(not(unix))]
+                    let mode = 0o644;
+
                     let node = TreeNode {
-                        name: file_path.file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string(),
+                        name: relative_path.to_string_lossy().to_string(),
                         node_type: NodeType::File,
-                        mode: 0o644,  // Simplified for now
-                        uid: 0,       // Simplified for now
-                        gid: 0,       // Simplified for now
+                        mode,
+                        uid: 0,       // Will be properly set in future
+                        gid: 0,       // Will be properly set in future
                         size: metadata.len(),
                         mtime: metadata.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64,
                         subtree_id: None,
                         chunks: Vec::new(), // Will be filled during actual backup
                     };
-                    
-                    tree_nodes.push(node);
+
+                    file_list.push((file_path, node));
                 }
             }
         }
@@ -145,26 +150,24 @@ impl BackupCommand {
                     .unwrap(),
             );
             
-            for (i, (path, mut node)) in paths.iter().zip(tree_nodes.into_iter()).enumerate() {
+            for (i, (file_path, mut node)) in file_list.into_iter().enumerate() {
                 backup_pb.set_message(format!("Processing {}", node.name));
-                
-                if let Ok(file_path) = self.find_file_for_node(&node.name, path) {
-                    match self.process_file(&repo, &chunker, &mut pack_manager, &file_path).await {
-                        Ok(chunks) => {
-                            node.chunks = chunks;
-                            let node_name = node.name.clone();
-                            processed_nodes.push(node);
-                            debug!("Successfully processed: {}", node_name);
-                        }
-                        Err(e) => {
-                            warn!("Failed to process {}: {}", node.name, e);
-                            // Continue with other files
-                        }
+
+                match self.process_file(&repo, &chunker, &mut pack_manager, &file_path).await {
+                    Ok(chunks) => {
+                        node.chunks = chunks;
+                        let node_name = node.name.clone();
+                        processed_nodes.push(node);
+                        debug!("Successfully processed: {}", node_name);
+                    }
+                    Err(e) => {
+                        warn!("Failed to process {}: {}", node.name, e);
+                        // Continue with other files
                     }
                 }
-                
+
                 backup_pb.inc(1);
-                
+
                 // Periodically save completed packs
                 if i % 100 == 0 {
                     if let Some(pack) = pack_manager.finish_current_pack() {
@@ -229,17 +232,6 @@ impl BackupCommand {
         false
     }
 
-    fn find_file_for_node(&self, node_name: &str, base_path: &PathBuf) -> Result<PathBuf> {
-        // This is a simplified implementation - in reality we'd need to track
-        // the full path for each node during scanning
-        let file_path = base_path.join(node_name);
-        if file_path.exists() {
-            Ok(file_path)
-        } else {
-            Err(anyhow!("File not found: {}", file_path.display()))
-        }
-    }
-
     async fn process_file(
         &self,
         repo: &Repository,
@@ -256,8 +248,8 @@ impl BackupCommand {
 
             // Check if chunk already exists (deduplication)
             if !repo.has_chunk(&chunk_id).await? {
-                // Add chunk to pack
-                if let Some(finished_pack) = pack_manager.add_chunk(chunk_id.clone(), chunk.data())? {
+                // Add chunk to pack (chunk_id is Copy, so this is cheap)
+                if let Some(finished_pack) = pack_manager.add_chunk(chunk_id, chunk.data())? {
                     // Save the completed pack
                     self.save_pack_and_index(repo, &finished_pack).await?;
                 }

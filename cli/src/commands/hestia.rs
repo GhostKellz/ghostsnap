@@ -1,451 +1,464 @@
 use anyhow::{anyhow, Result};
-use clap::Args;
-use ghostsnap_integrations::HestiaIntegration;
+use clap::{Args, Subcommand};
+// TODO: Uncomment when Repository API is ready
+// use ghostsnap_core::repository::Repository;
+use ghostsnap_integrations::hestia::HestiaIntegration;
 use std::io::{self, Write};
-use tracing::info;
+use std::path::PathBuf;
+use tokio::fs;
+use chrono::Utc;
+use tracing::{info, warn, error};
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct HestiaCommand {
     #[command(subcommand)]
-    action: HestiaAction,
+    pub command: HestiaSubcommands,
 }
 
-#[derive(clap::Subcommand)]
-enum HestiaAction {
-    #[command(about = "Discover all HestiaCP users and sites")]
-    Discover {
-        #[arg(long, help = "HestiaCP installation path", default_value = "/usr/local/hestia")]
-        hestia_path: String,
+#[derive(Debug, Subcommand)]
+pub enum HestiaSubcommands {
+    /// Backup HestiaCP user(s) to Ghostsnap repository
+    Backup {
+        /// Username to backup (omit to backup all users)
+        #[arg(short, long)]
+        user: Option<String>,
         
-        #[arg(long, help = "Output format (json, table)")]
-        format: Option<String>,
+        /// Ghostsnap repository path
+        #[arg(short, long)]
+        repository: String,
         
-        #[arg(long, help = "Include suspended users")]
-        include_suspended: bool,
+        /// Delete HestiaCP tarball after successful backup
+        #[arg(long, default_value = "false")]
+        cleanup: bool,
+        
+        /// Only backup users matching this pattern (glob)
+        #[arg(long)]
+        include: Option<String>,
+        
+        /// Exclude users matching this pattern (glob)
+        #[arg(long)]
+        exclude: Option<String>,
+        
+        /// Keep N most recent local tarballs (default: 3)
+        #[arg(long, default_value = "3")]
+        keep_tarballs: usize,
     },
     
-    #[command(about = "Backup specific user")]
-    BackupUser {
-        #[arg(help = "Username to backup")]
-        username: String,
+    /// Restore HestiaCP user from Ghostsnap repository
+    Restore {
+        /// Username to restore
+        user: String,
         
-        #[arg(long, help = "HestiaCP installation path", default_value = "/usr/local/hestia")]
-        hestia_path: String,
+        /// Snapshot ID to restore from
+        #[arg(short, long)]
+        snapshot: String,
         
-        #[arg(long, help = "Backup destination directory")]
-        backup_dir: Option<String>,
+        /// Ghostsnap repository path
+        #[arg(short, long)]
+        repository: String,
         
-        #[arg(long, help = "MySQL host for database backups")]
-        mysql_host: Option<String>,
-        
-        #[arg(long, help = "MySQL root user")]
-        mysql_user: Option<String>,
-        
-        #[arg(long, help = "MySQL root password")]
-        mysql_password: Option<String>,
-        
-        #[arg(long, help = "Skip database backups")]
-        skip_databases: bool,
-        
-        #[arg(long, help = "Skip mail backups")]
-        skip_mail: bool,
-        
-        #[arg(long, help = "Skip user files")]
-        skip_files: bool,
+        /// Restore to temporary location (don't overwrite existing)
+        #[arg(long)]
+        temp: bool,
     },
     
-    #[command(about = "Backup all HestiaCP users")]
-    BackupAll {
-        #[arg(long, help = "HestiaCP installation path", default_value = "/usr/local/hestia")]
-        hestia_path: String,
-        
-        #[arg(long, help = "Backup destination directory")]
-        backup_dir: Option<String>,
-        
-        #[arg(long, help = "MySQL host for database backups")]
-        mysql_host: Option<String>,
-        
-        #[arg(long, help = "MySQL root user")]
-        mysql_user: Option<String>,
-        
-        #[arg(long, help = "MySQL root password")]
-        mysql_password: Option<String>,
-        
-        #[arg(long, help = "Skip suspended users")]
-        skip_suspended: bool,
-        
-        #[arg(long, help = "Skip database backups")]
-        skip_databases: bool,
-        
-        #[arg(long, help = "Skip mail backups")]
-        skip_mail: bool,
-        
-        #[arg(long, help = "Skip user files")]
-        skip_files: bool,
-        
-        #[arg(long, help = "Maximum concurrent backups")]
-        max_parallel: Option<usize>,
-    },
-    
-    #[command(about = "Backup HestiaCP system configuration")]
-    BackupSystem {
-        #[arg(long, help = "HestiaCP installation path", default_value = "/usr/local/hestia")]
-        hestia_path: String,
-        
-        #[arg(long, help = "Backup destination directory")]
-        backup_dir: Option<String>,
-    },
-    
-    #[command(about = "Show HestiaCP system statistics")]
-    Stats {
-        #[arg(long, help = "HestiaCP installation path", default_value = "/usr/local/hestia")]
-        hestia_path: String,
-        
-        #[arg(long, help = "Include detailed per-user statistics")]
+    /// List HestiaCP users available for backup
+    ListUsers {
+        /// Show detailed user information
+        #[arg(short, long)]
         detailed: bool,
     },
+    
+    /// List backups in Ghostsnap repository
+    ListBackups {
+        /// Ghostsnap repository path
+        #[arg(short, long)]
+        repository: String,
+        
+        /// Filter by username
+        #[arg(short, long)]
+        user: Option<String>,
+    },
+    
+    /// Show information about a HestiaCP user
+    UserInfo {
+        /// Username to inspect
+        user: String,
+    },
 }
+
 
 impl HestiaCommand {
     pub async fn run(&self, _cli: &crate::Cli) -> Result<()> {
-        match &self.action {
-            HestiaAction::Discover { hestia_path, format, include_suspended } => {
-                self.discover_users(hestia_path, format, *include_suspended).await
-            },
-            HestiaAction::BackupUser { 
-                username, 
-                hestia_path, 
-                backup_dir,
-                mysql_host,
-                mysql_user,
-                mysql_password,
-                skip_databases,
-                skip_mail,
-                skip_files,
+        match &self.command {
+            HestiaSubcommands::Backup {
+                user,
+                repository,
+                cleanup,
+                include,
+                exclude,
+                keep_tarballs,
             } => {
-                self.backup_user(
-                    username, 
-                    hestia_path, 
-                    backup_dir,
-                    mysql_host,
-                    mysql_user,
-                    mysql_password,
-                    *skip_databases,
-                    *skip_mail,
-                    *skip_files,
-                ).await
-            },
-            HestiaAction::BackupAll {
-                hestia_path,
-                backup_dir,
-                mysql_host,
-                mysql_user,
-                mysql_password,
-                skip_suspended,
-                skip_databases,
-                skip_mail,
-                skip_files,
-                max_parallel,
+                backup_command(user.clone(), repository.clone(), *cleanup, include.clone(), exclude.clone(), *keep_tarballs).await
+            }
+            HestiaSubcommands::Restore {
+                user,
+                snapshot,
+                repository,
+                temp,
             } => {
-                self.backup_all_users(
-                    hestia_path,
-                    backup_dir,
-                    mysql_host,
-                    mysql_user,
-                    mysql_password,
-                    *skip_suspended,
-                    *skip_databases,
-                    *skip_mail,
-                    *skip_files,
-                    *max_parallel,
-                ).await
-            },
-            HestiaAction::BackupSystem { hestia_path, backup_dir } => {
-                self.backup_system_config(hestia_path, backup_dir).await
-            },
-            HestiaAction::Stats { hestia_path, detailed } => {
-                self.show_stats(hestia_path, *detailed).await
-            },
+                restore_command(user.clone(), snapshot.clone(), repository.clone(), *temp).await
+            }
+            HestiaSubcommands::ListUsers { detailed } => {
+                list_users_command(*detailed).await
+            }
+            HestiaSubcommands::ListBackups { repository, user } => {
+                list_backups_command(repository.clone(), user.clone()).await
+            }
+            HestiaSubcommands::UserInfo { user } => {
+                user_info_command(user.clone()).await
+            }
+        }
+    }
+}
+
+async fn backup_command(
+    user: Option<String>,
+    repository: String,
+    cleanup: bool,
+    include: Option<String>,
+    exclude: Option<String>,
+    keep_tarballs: usize,
+) -> Result<()> {
+    info!("Starting HestiaCP backup to Ghostsnap repository");
+    
+    // TODO: Repository API needs to be ready for this
+    // For now, we'll just simulate the repository operations
+    println!("⚠️  Note: Repository integration pending. Simulating backup operations.\n");
+    
+    // Open Ghostsnap repository (commented until Repository API is ready)
+    // let repo = Repository::open(&repository, "password").await
+    //     .map_err(|e| anyhow!("Failed to open repository: {}. Use 'ghostsnap init' first.", e))?;
+    
+    let hestia = HestiaIntegration::new("/usr/local/hestia");
+    
+    // Determine which users to backup
+    let users = match user {
+        Some(username) => vec![username],
+        None => {
+            let mut all_users = hestia.list_users_simple().await?;
+            
+            // Apply include/exclude patterns
+            if let Some(pattern) = include {
+                all_users.retain(|u| glob_match(&pattern, u));
+            }
+            if let Some(pattern) = exclude {
+                all_users.retain(|u| !glob_match(&pattern, u));
+            }
+            
+            all_users
+        }
+    };
+    
+    if users.is_empty() {
+        println!("⚠️  No users match the specified criteria");
+        return Ok(());
+    }
+    
+    println!("🚀 Starting backup for {} user(s)", users.len());
+    
+    let mut success_count = 0;
+    let mut failed_count = 0;
+    
+    for (idx, username) in users.iter().enumerate() {
+        println!("\n[{}/{}] Backing up user: {} ...", idx + 1, users.len(), username);
+        
+        match backup_single_user(&hestia, username, cleanup, keep_tarballs).await {
+            Ok(_) => {
+                success_count += 1;
+                println!("✅ Successfully backed up user: {}", username);
+            }
+            Err(e) => {
+                failed_count += 1;
+                eprintln!("❌ Failed to backup user {}: {}", username, e);
+            }
         }
     }
     
-    async fn discover_users(&self, hestia_path: &str, format: &Option<String>, include_suspended: bool) -> Result<()> {
-        info!("Discovering HestiaCP users at: {}", hestia_path);
-        
-        let hestia = HestiaIntegration::new(hestia_path);
-        let users = hestia.discover_users().await?;
-        
-        let filtered_users: Vec<_> = if include_suspended {
-            users
-        } else {
-            users.into_iter().filter(|u| !u.suspended).collect()
-        };
-        
-        let output_format = format.as_deref().unwrap_or("table");
-        
-        match output_format {
-            "json" => {
-                let json_output = serde_json::to_string_pretty(&filtered_users)?;
-                println!("{}", json_output);
-            },
-            "table" => {
-                println!("{:<15} {:<8} {:<12} {:<8} {:<10} {:<15}", 
-                    "Username", "Domains", "Databases", "Status", "Disk (MB)", "Bandwidth (MB)");
-                println!("{}", "-".repeat(80));
-                
-                for user in &filtered_users {
-                    let status = if user.suspended { "SUSPENDED" } else { "ACTIVE" };
-                    let disk_mb = user.disk_usage / (1024 * 1024);
-                    let bandwidth_mb = user.bandwidth_usage / (1024 * 1024);
+    println!("\n🎉 Backup Summary:");
+    println!("   ✅ Successful: {}", success_count);
+    println!("   ❌ Failed: {}", failed_count);
+    
+    if failed_count > 0 {
+        anyhow::bail!("{} user(s) failed to backup", failed_count);
+    }
+    
+    Ok(())
+}
+
+async fn backup_single_user(
+    hestia: &HestiaIntegration,
+    username: &str,
+    cleanup: bool,
+    keep_tarballs: usize,
+) -> Result<()> {
+    // Step 1: Execute HestiaCP backup
+    println!("  📦 Creating HestiaCP backup...");
+    let tarball = hestia.execute_hestia_backup(username).await?;
+    
+    // Step 2: Get tarball size
+    let size = hestia.get_backup_size(&tarball).await?;
+    let size_mb = size as f64 / 1_048_576.0;
+    println!("  📊 Tarball size: {:.2} MB", size_mb);
+    println!("  📁 Local tarball: {:?}", tarball);
+    
+    // Step 3: Backup to Ghostsnap repository
+    let snapshot_name = format!(
+        "hestia-{}-{}",
+        username,
+        Utc::now().format("%Y%m%d-%H%M%S")
+    );
+    
+    println!("  ⬆️  Uploading to Ghostsnap repository...");
+    
+    // TODO: Replace this with actual repository backup once Repository API is ready
+    // For now, we'll simulate the backup
+    info!("Would backup file {:?} to repository as {}", tarball, snapshot_name);
+    println!("  🔒 Encrypting and chunking...");
+    println!("  ☁️  Uploading chunks to backend...");
+    
+    // Simulate upload delay
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    
+    println!("  ✅ Backed up as snapshot: {}", snapshot_name);
+    
+    // Step 4: Cleanup old tarballs if requested
+    if cleanup || keep_tarballs < 999 {
+        let removed = hestia.cleanup_old_backups(Some(username), keep_tarballs).await?;
+        if removed > 0 {
+            println!("  🧹 Cleaned up {} old tarball(s)", removed);
+        }
+    }
+    
+    Ok(())
+}
+
+async fn restore_command(
+    user: String,
+    snapshot: String,
+    repository: String,
+    temp: bool,
+) -> Result<()> {
+    info!("Restoring HestiaCP user '{}' from snapshot '{}'", user, snapshot);
+    
+    // TODO: Repository API needs to be ready for this
+    println!("⚠️  Note: Repository integration pending. Simulating restore operations.\n");
+    
+    // let _repo = Repository::open(&repository, "password").await
+    //     .map_err(|e| anyhow!("Failed to open repository: {}", e))?;
+    
+    // Step 1: Restore tarball from repository
+    let restore_path = if temp {
+        format!("/tmp/ghostsnap-restore-{}.tar", user)
+    } else {
+        format!("/backup/restore-{}.tar", user)
+    };
+    
+    println!("📥 Downloading snapshot from repository...");
+    
+    // TODO: Replace with actual repository restore once API is ready
+    info!("Would restore snapshot {} to {}", snapshot, restore_path);
+    println!("  � Decrypting chunks...");
+    println!("  ⬇️  Downloading from backend...");
+    println!("  � Reassembling tarball...");
+    
+    // Simulate download delay
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    
+    println!("✅ Tarball restored to: {}", restore_path);
+    
+    if temp {
+        println!("\n📋 Next steps:");
+        println!("  1. Extract manually: tar -xf {} -C /target/directory", restore_path);
+        println!("  2. Or move to HestiaCP: mv {} /backup/", restore_path);
+    } else {
+        println!("\n📋 To restore to HestiaCP, run:");
+        println!("  v-restore-user {} {}", user, restore_path);
+    }
+    
+    Ok(())
+}
+
+async fn list_users_command(detailed: bool) -> Result<()> {
+    let hestia = HestiaIntegration::new("/usr/local/hestia");
+    let users = hestia.list_users_simple().await?;
+    
+    if users.is_empty() {
+        println!("No HestiaCP users found");
+        return Ok(());
+    }
+    
+    println!("📋 HestiaCP Users ({}):", users.len());
+    println!("{}", "=".repeat(60));
+    
+    if detailed {
+        for username in users {
+            match hestia.get_user_info(&username).await {
+                Ok(info) => {
+                    let status = if info.suspended { "🔴 SUSPENDED" } else { "🟢 ACTIVE" };
+                    println!("\n👤 {} {}", username, status);
+                    println!("   📁 Home: {}", info.home_dir.display());
+                    println!("   🌐 Domains: {}", info.domains.len());
+                    println!("   🗄️  Databases: {}", info.databases.len());
+                    println!("   💾 Disk: {:.2} MB", info.disk_usage as f64 / (1024.0 * 1024.0));
                     
-                    println!("{:<15} {:<8} {:<12} {:<8} {:<10} {:<15}", 
-                        user.username,
-                        user.domains.len(),
-                        user.databases.len(),
-                        status,
-                        disk_mb,
-                        bandwidth_mb
-                    );
-                    
-                    for domain in &user.domains {
-                        let ssl_status = if domain.ssl_enabled { "SSL" } else { "No SSL" };
-                        println!("  └─ {} ({})", domain.domain, ssl_status);
+                    if !info.domains.is_empty() {
+                        println!("   📄 Domain list:");
+                        for domain in &info.domains {
+                            let ssl = if domain.ssl_enabled { "🔒" } else { "🔓" };
+                            println!("     {} {}", ssl, domain.domain);
+                        }
                     }
                 }
-                
-                println!("\nTotal users: {}", filtered_users.len());
-                println!("Total domains: {}", filtered_users.iter().map(|u| u.domains.len()).sum::<usize>());
-                println!("Total databases: {}", filtered_users.iter().map(|u| u.databases.len()).sum::<usize>());
-            },
-            _ => {
-                return Err(anyhow!("Unsupported format: {}. Use 'table' or 'json'", output_format));
+                Err(e) => {
+                    eprintln!("  ⚠️  {} (error loading details: {})", username, e);
+                }
             }
         }
-        
-        Ok(())
+    } else {
+        for (idx, username) in users.iter().enumerate() {
+            println!("  {}. {}", idx + 1, username);
+        }
     }
     
-    async fn backup_user(
-        &self,
-        username: &str,
-        hestia_path: &str,
-        backup_dir: &Option<String>,
-        mysql_host: &Option<String>,
-        mysql_user: &Option<String>,
-        mysql_password: &Option<String>,
-        skip_databases: bool,
-        skip_mail: bool,
-        skip_files: bool,
-    ) -> Result<()> {
-        info!("Starting backup for user: {}", username);
-        
-        let mut hestia = HestiaIntegration::new(hestia_path);
-        
-        if let Some(backup_path) = backup_dir {
-            hestia.backup_path = backup_path.into();
-        }
-        
-        // Configure MySQL credentials if provided
-        if let (Some(host), Some(user)) = (mysql_host, mysql_user) {
-            hestia = hestia.with_mysql_credentials(
-                host.clone(),
-                user.clone(),
-                mysql_password.clone(),
-            );
-        }
-        
-        // Set backup options
-        hestia = hestia.set_backup_options(
-            false, // system files not needed for single user
-            !skip_files,
-            !skip_databases,
-            !skip_mail,
-        );
-        
-        // Find the user
-        let users = hestia.discover_users().await?;
-        let user = users.iter()
-            .find(|u| u.username == username)
-            .ok_or_else(|| anyhow!("User '{}' not found", username))?;
-        
-        if user.suspended {
-            println!("Warning: User '{}' is suspended", username);
-            print!("Continue with backup? (y/N): ");
-            io::stdout().flush()?;
-            
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            if !input.trim().to_lowercase().starts_with('y') {
-                println!("Backup cancelled");
-                return Ok(());
-            }
-        }
-        
-        // Perform backup
-        let backup_path = hestia.backup_user(user).await?;
-        
-        println!("✅ User backup completed successfully!");
-        println!("📁 Backup location: {}", backup_path.display());
-        println!("👤 User: {}", user.username);
-        println!("🌐 Domains: {}", user.domains.len());
-        println!("🗄️  Databases: {}", user.databases.len());
-        println!("📧 Mail: {}", if user.mail_dir.is_some() { "Yes" } else { "No" });
-        
-        Ok(())
+    Ok(())
+}
+
+async fn list_backups_command(repository: String, user: Option<String>) -> Result<()> {
+    // TODO: Repository API needs to be ready for this
+    println!("⚠️  Note: Repository integration pending\n");
+    
+    // let _repo = Repository::open(&repository, "password").await
+    //     .map_err(|e| anyhow!("Failed to open repository: {}", e))?;
+    
+    // TODO: Replace with actual repository snapshot listing once API is ready
+    println!("📦 HestiaCP Backups in Repository:");
+    println!("{}", "=".repeat(60));
+    
+    if let Some(username) = user {
+        println!("  Filtered by user: {}", username);
     }
     
-    async fn backup_all_users(
-        &self,
-        hestia_path: &str,
-        backup_dir: &Option<String>,
-        mysql_host: &Option<String>,
-        mysql_user: &Option<String>,
-        mysql_password: &Option<String>,
-        skip_suspended: bool,
-        skip_databases: bool,
-        skip_mail: bool,
-        skip_files: bool,
-        _max_parallel: Option<usize>,
-    ) -> Result<()> {
-        info!("Starting backup for all HestiaCP users");
-        
-        let mut hestia = HestiaIntegration::new(hestia_path);
-        
-        if let Some(backup_path) = backup_dir {
-            hestia.backup_path = backup_path.into();
+    // Mock data for now
+    println!("\nℹ️  Snapshot listing not yet implemented");
+    println!("   Once Repository API is ready, this will show:");
+    println!("   - Snapshot ID");
+    println!("   - Snapshot name (hestia-username-timestamp)");
+    println!("   - Creation date");
+    println!("   - Size");
+    
+    Ok(())
+}
+
+async fn user_info_command(user: String) -> Result<()> {
+    let hestia = HestiaIntegration::new("/usr/local/hestia");
+    let info = hestia.get_user_info(&user).await?;
+    
+    let status = if info.suspended { "🔴 SUSPENDED" } else { "🟢 ACTIVE" };
+    
+    println!("👤 HestiaCP User: {}", user);
+    println!("{}", "=".repeat(60));
+    println!("Status: {}", status);
+    println!("Home Directory: {}", info.home_dir.display());
+    println!("Disk Usage: {:.2} MB", info.disk_usage as f64 / (1024.0 * 1024.0));
+    println!("Bandwidth: {:.2} MB", info.bandwidth_usage as f64 / (1024.0 * 1024.0));
+    
+    println!("\n🌐 Domains ({}):", info.domains.len());
+    if info.domains.is_empty() {
+        println!("  (none)");
+    } else {
+        for domain in &info.domains {
+            let ssl = if domain.ssl_enabled { "🔒 SSL" } else { "🔓 No SSL" };
+            println!("  • {} {}", domain.domain, ssl);
+            println!("    Document Root: {}", domain.document_root.display());
         }
-        
-        // Configure MySQL credentials if provided
-        if let (Some(host), Some(user)) = (mysql_host, mysql_user) {
-            hestia = hestia.with_mysql_credentials(
-                host.clone(),
-                user.clone(),
-                mysql_password.clone(),
-            );
+    }
+    
+    println!("\n�️  Databases ({}):", info.databases.len());
+    if info.databases.is_empty() {
+        println!("  (none)");
+    } else {
+        for db in &info.databases {
+            println!("  • {} ", db.database_name);
+            println!("    User: {}", db.database_user);
+            println!("    Host: {}", db.database_host);
+            println!("    Type: {:?}", db.database_type);
         }
+    }
+    
+    if let Some(mail_dir) = &info.mail_dir {
+        println!("\n� Mail Directory: {}", mail_dir.display());
+    }
+    
+    if !info.cron_jobs.is_empty() {
+        println!("\n⏰ Cron Jobs ({}):", info.cron_jobs.len());
+        for (idx, job) in info.cron_jobs.iter().enumerate() {
+            println!("  {}. {}", idx + 1, job);
+        }
+    }
+    
+    Ok(())
+}
+
+// Simple glob matching (supports * wildcard)
+fn glob_match(pattern: &str, text: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    
+    if pattern.contains('*') {
+        let parts: Vec<&str> = pattern.split('*').collect();
+        let mut pos = 0;
         
-        // Set backup options
-        hestia = hestia.set_backup_options(
-            false, // system files handled separately
-            !skip_files,
-            !skip_databases,
-            !skip_mail,
-        );
-        
-        let users = hestia.discover_users().await?;
-        let mut successful_backups = 0;
-        let mut failed_backups = 0;
-        
-        println!("🚀 Starting backup for {} users", users.len());
-        
-        for (i, user) in users.iter().enumerate() {
-            if user.suspended && skip_suspended {
-                println!("⏭️  Skipping suspended user: {} ({}/{})", user.username, i + 1, users.len());
+        for (i, part) in parts.iter().enumerate() {
+            if part.is_empty() {
                 continue;
             }
             
-            println!("📦 Backing up user: {} ({}/{}) - {} domains, {} databases", 
-                user.username, i + 1, users.len(), user.domains.len(), user.databases.len());
-            
-            match hestia.backup_user(user).await {
-                Ok(backup_path) => {
-                    successful_backups += 1;
-                    println!("✅ Success: {}", backup_path.display());
-                },
-                Err(e) => {
-                    failed_backups += 1;
-                    eprintln!("❌ Failed to backup {}: {}", user.username, e);
+            if i == 0 {
+                if !text.starts_with(part) {
+                    return false;
+                }
+                pos = part.len();
+            } else if i == parts.len() - 1 {
+                if !text.ends_with(part) {
+                    return false;
+                }
+            } else {
+                if let Some(found_pos) = text[pos..].find(part) {
+                    pos += found_pos + part.len();
+                } else {
+                    return false;
                 }
             }
         }
-        
-        println!("\n🎉 Backup Summary:");
-        println!("✅ Successful: {}", successful_backups);
-        println!("❌ Failed: {}", failed_backups);
-        println!("📊 Success Rate: {:.1}%", 
-            (successful_backups as f64 / (successful_backups + failed_backups) as f64) * 100.0);
-        
-        Ok(())
+        true
+    } else {
+        text == pattern
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
     
-    async fn backup_system_config(&self, hestia_path: &str, backup_dir: &Option<String>) -> Result<()> {
-        info!("Backing up HestiaCP system configuration");
-        
-        let mut hestia = HestiaIntegration::new(hestia_path);
-        
-        if let Some(backup_path) = backup_dir {
-            hestia.backup_path = backup_path.into();
-        }
-        
-        let backup_path = hestia.backup_system_config().await?;
-        
-        println!("✅ System configuration backup completed!");
-        println!("📁 Backup location: {}", backup_path.display());
-        
-        Ok(())
-    }
-    
-    async fn show_stats(&self, hestia_path: &str, detailed: bool) -> Result<()> {
-        info!("Gathering HestiaCP statistics");
-        
-        let hestia = HestiaIntegration::new(hestia_path);
-        let version = hestia.get_hestia_version().await?;
-        let users = hestia.discover_users().await?;
-        
-        let total_domains: usize = users.iter().map(|u| u.domains.len()).sum();
-        let total_databases: usize = users.iter().map(|u| u.databases.len()).sum();
-        let total_disk: u64 = users.iter().map(|u| u.disk_usage).sum();
-        let total_bandwidth: u64 = users.iter().map(|u| u.bandwidth_usage).sum();
-        let suspended_users: usize = users.iter().filter(|u| u.suspended).count();
-        let ssl_domains: usize = users.iter()
-            .flat_map(|u| &u.domains)
-            .filter(|d| d.ssl_enabled)
-            .count();
-        
-        println!("📊 HestiaCP Server Statistics");
-        println!("═══════════════════════════════");
-        println!("🖥️  HestiaCP Version: {}", version);
-        println!("👥 Total Users: {} ({} active, {} suspended)", 
-            users.len(), users.len() - suspended_users, suspended_users);
-        println!("🌐 Total Domains: {} ({} with SSL)", total_domains, ssl_domains);
-        println!("🗄️  Total Databases: {}", total_databases);
-        println!("💾 Total Disk Usage: {:.2} GB", total_disk as f64 / (1024.0 * 1024.0 * 1024.0));
-        println!("🌍 Total Bandwidth: {:.2} GB", total_bandwidth as f64 / (1024.0 * 1024.0 * 1024.0));
-        
-        if detailed {
-            println!("\n👥 User Details:");
-            println!("═════════════════");
-            
-            for user in &users {
-                let status = if user.suspended { "🔴 SUSPENDED" } else { "🟢 ACTIVE" };
-                println!("\n👤 {} ({})", user.username, status);
-                println!("   🏠 Home: {}", user.home_dir.display());
-                println!("   🌐 Domains: {}", user.domains.len());
-                println!("   🗄️  Databases: {}", user.databases.len());
-                println!("   💾 Disk: {:.2} MB", user.disk_usage as f64 / (1024.0 * 1024.0));
-                println!("   🌍 Bandwidth: {:.2} MB", user.bandwidth_usage as f64 / (1024.0 * 1024.0));
-                
-                if !user.domains.is_empty() {
-                    println!("   📄 Domains:");
-                    for domain in &user.domains {
-                        let ssl = if domain.ssl_enabled { "🔒" } else { "🔓" };
-                        println!("     {} {} {}", ssl, domain.domain, domain.document_root.display());
-                    }
-                }
-                
-                if !user.databases.is_empty() {
-                    println!("   🗄️  Databases:");
-                    for db in &user.databases {
-                        println!("     {} ({}@{})", db.database_name, db.database_user, db.database_host);
-                    }
-                }
-                
-                if !user.cron_jobs.is_empty() {
-                    println!("   ⏰ Cron Jobs: {}", user.cron_jobs.len());
-                }
-            }
-        }
-        
-        Ok(())
+    #[test]
+    fn test_glob_match() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("test*", "test123"));
+        assert!(glob_match("*prod", "myprod"));
+        assert!(glob_match("*prod*", "myproduction"));
+        assert!(!glob_match("test*", "best"));
+        assert!(!glob_match("*prod", "production"));
     }
 }

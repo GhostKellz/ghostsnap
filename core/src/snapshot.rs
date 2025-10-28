@@ -5,6 +5,25 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use bytes::Bytes;
 
+/// A snapshot represents a point-in-time backup of one or more paths.
+///
+/// Snapshots contain metadata about the backup including the timestamp, paths backed up,
+/// hostname, and reference to the encrypted tree structure containing the actual file data.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ghostsnap_core::snapshot::Snapshot;
+/// use ghostsnap_core::ChunkID;
+/// use std::path::PathBuf;
+///
+/// let tree_id = ChunkID::from_data(b"tree-data");
+/// let snapshot = Snapshot::new(vec![PathBuf::from("/data")], tree_id)
+///     .with_tags(vec!["production".to_string()])
+///     .with_excludes(vec!["*.log".to_string()]);
+///
+/// println!("Snapshot: {}", snapshot.summary());
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub id: SnapshotID,
@@ -88,6 +107,12 @@ pub struct Tree {
     pub nodes: Vec<TreeNode>,
 }
 
+impl Default for Tree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Tree {
     pub fn new() -> Self {
         Self { nodes: Vec::new() }
@@ -130,6 +155,12 @@ impl Tree {
 #[derive(Debug)]
 pub struct SnapshotManager {
     snapshots: std::collections::HashMap<SnapshotID, Snapshot>,
+}
+
+impl Default for SnapshotManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SnapshotManager {

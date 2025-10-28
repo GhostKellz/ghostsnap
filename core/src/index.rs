@@ -4,6 +4,23 @@ use std::collections::HashMap;
 use tokio::fs;
 use std::path::Path;
 
+/// An index that maps chunk IDs to their physical locations in pack files.
+///
+/// The index is the critical data structure for fast chunk lookups during backup
+/// (for deduplication) and restore operations. It maintains:
+///
+/// - A mapping of chunk IDs to their metadata (pack ID, offset, length)
+/// - Information about pack files (size, chunk count)
+///
+/// # Examples
+///
+/// ```
+/// use ghostsnap_core::index::Index;
+///
+/// let mut index = Index::new();
+/// // Add chunks and packs during backup...
+/// assert!(index.chunks.is_empty());
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Index {
     pub chunks: HashMap<ChunkID, ChunkMetadata>,
@@ -15,6 +32,12 @@ pub struct PackInfo {
     pub id: PackID,
     pub size: u64,
     pub chunk_count: u32,
+}
+
+impl Default for Index {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Index {
@@ -58,9 +81,29 @@ impl Index {
     }
 }
 
+/// Manages multiple index files and provides a unified view.
+///
+/// The `IndexManager` maintains both individual index files and a master index
+/// for fast lookups. It handles index merging, compaction, and provides an
+/// interface for chunk lookups across all indices.
+///
+/// # Examples
+///
+/// ```
+/// use ghostsnap_core::index::IndexManager;
+///
+/// let mut manager = IndexManager::new();
+/// // Add indices as backups are created...
+/// ```
 pub struct IndexManager {
     indices: Vec<Index>,
     master_index: Index,
+}
+
+impl Default for IndexManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IndexManager {

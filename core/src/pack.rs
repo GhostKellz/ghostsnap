@@ -52,7 +52,7 @@ impl PackFile {
         
         let offset = self.data.len() as u64;
         let chunk = PackedChunk {
-            id: id.clone(),
+            id,  // ChunkID implements Copy, no need to clone
             offset,
             length: compressed.len() as u32,
             uncompressed_length: data.len() as u32,
@@ -115,21 +115,23 @@ impl PackFile {
         // Serialize header and chunk index
         let header_data = bincode::serialize(&self.header).map_err(|e| Error::Other(e.to_string()))?;
         let chunks_data = bincode::serialize(&self.chunks).map_err(|e| Error::Other(e.to_string()))?;
-        
-        // Write header length and encrypted header
-        writer.write_u32_le(header_data.len() as u32).await.map_err(|e| Error::Other(e.to_string()))?;
+
+        // Encrypt header and chunk index
         let encrypted_header = encryptor.encrypt(&header_data)?;
-        writer.write_all(&encrypted_header).await.map_err(|e| Error::Other(e.to_string()))?;
-        
-        // Write chunk index length and encrypted index
-        writer.write_u32_le(chunks_data.len() as u32).await.map_err(|e| Error::Other(e.to_string()))?;
         let encrypted_chunks = encryptor.encrypt(&chunks_data)?;
-        writer.write_all(&encrypted_chunks).await.map_err(|e| Error::Other(e.to_string()))?;
-        
-        // Write encrypted chunk data
         let encrypted_data = encryptor.encrypt(&self.data)?;
+
+        // Write encrypted header length and encrypted header
+        writer.write_u32_le(encrypted_header.len() as u32).await.map_err(|e| Error::Other(e.to_string()))?;
+        writer.write_all(&encrypted_header).await.map_err(|e| Error::Other(e.to_string()))?;
+
+        // Write encrypted chunk index length and encrypted index
+        writer.write_u32_le(encrypted_chunks.len() as u32).await.map_err(|e| Error::Other(e.to_string()))?;
+        writer.write_all(&encrypted_chunks).await.map_err(|e| Error::Other(e.to_string()))?;
+
+        // Write encrypted chunk data (rest of file)
         writer.write_all(&encrypted_data).await.map_err(|e| Error::Other(e.to_string()))?;
-        
+
         Ok(())
     }
 
@@ -205,7 +207,8 @@ impl PackManager {
     }
 
     fn start_new_pack(&mut self) -> Result<()> {
-        let pack_id = format!("pack-{:08x}", self.pack_counter);
+        // Use UUID for globally unique pack IDs to avoid collisions across backups
+        let pack_id = uuid::Uuid::new_v4().to_string();
         self.pack_counter += 1;
         self.current_pack = Some(PackFile::new(pack_id));
         Ok(())
