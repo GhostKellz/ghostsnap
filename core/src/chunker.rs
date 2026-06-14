@@ -16,11 +16,11 @@ impl Chunker {
             max_size: avg_size * 4,
         }
     }
-    
-    pub fn default() -> Self {
+
+    pub fn new_default() -> Self {
         Self::new(4 * 1024 * 1024)
     }
-    
+
     pub fn chunk_data(&self, data: &[u8]) -> Vec<Chunk> {
         let chunker = FastCDC::new(data, self.min_size, self.avg_size, self.max_size);
         chunker
@@ -31,7 +31,7 @@ impl Chunker {
             })
             .collect()
     }
-    
+
     pub fn chunk_reader<R: Read>(&self, mut reader: R) -> Result<Vec<Chunk>> {
         let mut buffer = Vec::new();
         reader.read_to_end(&mut buffer)?;
@@ -59,15 +59,15 @@ impl Chunk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_chunking() {
         let chunker = Chunker::new(1024);
         let data = vec![0u8; 10000];
         let chunks = chunker.chunk_data(&data);
-        
+
         assert!(!chunks.is_empty());
-        
+
         let total_size: usize = chunks.iter().map(|c| c.length).sum();
         assert_eq!(total_size, data.len());
     }

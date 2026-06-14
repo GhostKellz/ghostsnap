@@ -3,16 +3,15 @@ members = [
     "cli",
     "core",
     "backends",
-    "integrations",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-authors = ["Ghostsnap Contributors"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/ghostsnap/ghostsnap"
+authors = ["Christopher Kelley <ckelley@ghostkellz.sh>"]
+license = "MIT"
+repository = "https://github.com/GhostKellz/ghostsnap"
 
 [workspace.dependencies]
 tokio = { version = "1.41", features = ["full"] }
@@ -24,7 +23,7 @@ serde_json = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.5", features = ["derive", "env"] }
-indicatif = "0.17"
+indicatif = "0.18.4"
 blake3 = "1.5"
 chacha20poly1305 = "0.10"
 argon2 = "0.5"
@@ -33,15 +32,27 @@ base64 = "0.22"
 hex = "0.4"
 fastcdc = "3.1"
 ignore = "0.4"
-bytes = "1.8"
+bytes = "1.11"
 futures = "0.3"
 reqwest = { version = "0.12", features = ["json", "stream"] }
-aws-sdk-s3 = "1.63"
-aws-config = "1.5"
-azure_storage = "0.21"
-azure_storage_blobs = "0.21"
-azure_identity = "0.21"
-azure_core = "0.21"
+# Disable the legacy `rustls` default feature (pulls vulnerable rustls 0.21 /
+# rustls-webpki 0.101); `default-https-client` already provides modern rustls-aws-lc.
+aws-sdk-s3 = { version = "1.108", default-features = false, features = [
+    "sigv4a",
+    "http-1x",
+    "default-https-client",
+    "rt-tokio",
+    "behavior-version-latest",
+] }
+aws-config = "1.8"
+azure_storage_blob = "1.0"
+azure_identity = "1.0"
+azure_core = "1.0"
+url = "2.5"
+# RSA support is disabled to drop the unpatched `rsa` crate (RUSTSEC-2023-0071).
+# SFTP uses Ed25519/ECDSA host keys and client keys only.
+russh = { version = "0.61", default-features = false, features = ["flate2", "aws-lc-rs"] }
+russh-sftp = "2.3"
 chrono = { version = "0.4", features = ["serde"] }
 directories = "5.0"
 toml = "0.8"

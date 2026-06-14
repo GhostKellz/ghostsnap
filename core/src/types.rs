@@ -1,7 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChunkID(blake3::Hash);
@@ -14,11 +15,11 @@ impl ChunkID {
     pub fn from_data(data: &[u8]) -> Self {
         Self(blake3::hash(data))
     }
-    
+
     pub fn as_bytes(&self) -> &[u8; 32] {
         self.0.as_bytes()
     }
-    
+
     pub fn to_hex(&self) -> String {
         self.0.to_hex().to_string()
     }
@@ -36,7 +37,7 @@ impl From<blake3::Hash> for ChunkID {
 
 impl FromStr for ChunkID {
     type Err = hex::FromHexError;
-    
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = hex::decode(s)?;
         if bytes.len() != 32 {
@@ -81,6 +82,57 @@ pub struct RepoConfig {
     pub id: String,
     pub chunker_polynomial: u64,
     pub kdf_params: KdfParams,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<RepoTransport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RepoTransport {
+    Local,
+    S3(S3RepoTransport),
+    Azure(AzureRepoTransport),
+    Rclone(RcloneRepoTransport),
+    Sftp(SftpRepoTransport),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct S3RepoTransport {
+    pub bucket: String,
+    pub prefix: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sse: Option<S3RepoSse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct S3RepoSse {
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kms_key_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AzureRepoTransport {
+    pub account_name: String,
+    pub container: String,
+    pub prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RcloneRepoTransport {
+    pub remote: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SftpRepoTransport {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,11 +181,29 @@ pub struct TreeNode {
     pub gid: u32,
     pub size: u64,
     pub mtime: i64,
+    /// Symlink target path (only for NodeType::Symlink)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_target: Option<String>,
     pub subtree_id: Option<ChunkID>,
     pub chunks: Vec<ChunkRef>,
+    /// Extended attributes (name -> value)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xattr: Option<HashMap<String, Vec<u8>>>,
+    /// Sparse file holes as (offset, length) pairs
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sparse_holes: Option<Vec<(u64, u64)>>,
+    /// Inode number for hardlink detection (Unix only)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inode: Option<u64>,
+    /// Number of hardlinks to this inode
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nlink: Option<u32>,
+    /// Path to the original file for hardlinks (if this is a hardlink to another file)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardlink_target: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeType {
     File,
     Directory,
@@ -161,6 +231,7 @@ impl Default for RepoConfig {
             id: uuid::Uuid::new_v4().to_string(),
             chunker_polynomial: 0x3DA3358B4DC173,
             kdf_params: KdfParams::default(),
+            transport: None,
         }
     }
 }
@@ -170,7 +241,7 @@ impl Default for KdfParams {
         use rand::RngCore;
         let mut salt = vec![0u8; 32];
         rand::thread_rng().fill_bytes(&mut salt);
-        
+
         Self {
             algorithm: "argon2id".to_string(),
             iterations: 1,

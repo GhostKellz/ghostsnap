@@ -1,9 +1,9 @@
-use crate::{Result, Error, ChunkID, SnapshotID, TreeNode};
 use crate::crypto::Encryptor;
+use crate::{ChunkID, Error, Result, SnapshotID, TreeNode};
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use bytes::Bytes;
 
 /// A snapshot represents a point-in-time backup of one or more paths.
 ///
@@ -42,11 +42,11 @@ impl Snapshot {
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
-        
+
         let username = std::env::var("USER")
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "unknown".to_string());
-        
+
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             parent: None,
@@ -59,17 +59,17 @@ impl Snapshot {
             excludes: Vec::new(),
         }
     }
-    
+
     pub fn with_parent(mut self, parent: SnapshotID) -> Self {
         self.parent = Some(parent);
         self
     }
-    
+
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
     }
-    
+
     pub fn with_excludes(mut self, excludes: Vec<String>) -> Self {
         self.excludes = excludes;
         self
@@ -93,7 +93,8 @@ impl Snapshot {
     }
 
     pub fn summary(&self) -> String {
-        format!("{} - {} paths on {} at {}", 
+        format!(
+            "{} - {} paths on {} at {}",
             self.short_id(),
             self.paths.len(),
             self.hostname,
@@ -117,18 +118,18 @@ impl Tree {
     pub fn new() -> Self {
         Self { nodes: Vec::new() }
     }
-    
+
     pub fn add_node(&mut self, node: TreeNode) {
         self.nodes.push(node);
     }
-    
+
     pub fn serialize(&self, encryptor: &Encryptor) -> Result<Bytes> {
         let json_data = serde_json::to_vec(self)
             .map_err(|e| Error::Other(format!("Failed to serialize tree: {}", e)))?;
         let encrypted_data = encryptor.encrypt(&json_data)?;
         Ok(Bytes::from(encrypted_data))
     }
-    
+
     pub fn deserialize(data: &[u8], encryptor: &Encryptor) -> Result<Self> {
         let decrypted_data = encryptor.decrypt(data)?;
         serde_json::from_slice(&decrypted_data)
@@ -180,31 +181,37 @@ impl SnapshotManager {
 
     pub fn list_snapshots(&self) -> Vec<&Snapshot> {
         let mut snapshots: Vec<_> = self.snapshots.values().collect();
-        snapshots.sort_by(|a, b| b.time.cmp(&a.time)); // Most recent first
+        snapshots.sort_by_key(|s| std::cmp::Reverse(s.time)); // Most recent first
         snapshots
     }
 
     pub fn find_snapshots_by_hostname(&self, hostname: &str) -> Vec<&Snapshot> {
-        let mut snapshots: Vec<_> = self.snapshots.values()
+        let mut snapshots: Vec<_> = self
+            .snapshots
+            .values()
             .filter(|s| s.hostname == hostname)
             .collect();
-        snapshots.sort_by(|a, b| b.time.cmp(&a.time));
+        snapshots.sort_by_key(|s| std::cmp::Reverse(s.time));
         snapshots
     }
 
     pub fn find_snapshots_by_path(&self, path: &std::path::Path) -> Vec<&Snapshot> {
-        let mut snapshots: Vec<_> = self.snapshots.values()
+        let mut snapshots: Vec<_> = self
+            .snapshots
+            .values()
             .filter(|s| s.paths.iter().any(|p| p == path))
             .collect();
-        snapshots.sort_by(|a, b| b.time.cmp(&a.time));
+        snapshots.sort_by_key(|s| std::cmp::Reverse(s.time));
         snapshots
     }
 
     pub fn find_snapshots_by_tag(&self, tag: &str) -> Vec<&Snapshot> {
-        let mut snapshots: Vec<_> = self.snapshots.values()
+        let mut snapshots: Vec<_> = self
+            .snapshots
+            .values()
             .filter(|s| s.tags.contains(&tag.to_string()))
             .collect();
-        snapshots.sort_by(|a, b| b.time.cmp(&a.time));
+        snapshots.sort_by_key(|s| std::cmp::Reverse(s.time));
         snapshots
     }
 

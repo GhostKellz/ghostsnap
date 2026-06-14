@@ -1,8 +1,15 @@
 mod commands;
+mod config;
+mod hooks;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use commands::{init::InitCommand, backup::BackupCommand, snapshots::SnapshotsCommand, hestia::HestiaCommand, restore::RestoreCommand};
+use commands::{
+    backup::BackupCommand, check::CheckCommand, copy::CopyCommand, diff::DiffCommand,
+    dump::DumpCommand, forget::ForgetCommand, init::InitCommand, job::JobCommand, ls::LsCommand,
+    prune::PruneCommand, restore::RestoreCommand, snapshots::SnapshotsCommand,
+    stats::StatsCommand,
+};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -15,16 +22,16 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
-    
+
     #[arg(long, env = "GHOSTSNAP_REPO", help = "Repository path")]
     repo: Option<String>,
-    
+
     #[arg(long, env = "GHOSTSNAP_PASSWORD", help = "Repository password")]
     password: Option<String>,
-    
+
     #[arg(short, long, help = "Enable verbose output")]
     verbose: bool,
-    
+
     #[arg(short, long, help = "Enable quiet mode")]
     quiet: bool,
 }
@@ -33,94 +40,66 @@ struct Cli {
 enum Commands {
     #[command(about = "Initialize a new repository")]
     Init(InitCommand),
-    
+
     #[command(about = "Create a new backup")]
     Backup(BackupCommand),
-    
+
     #[command(about = "List snapshots")]
     Snapshots(SnapshotsCommand),
-    
-    #[command(about = "HestiaCP integration commands")]
-    Hestia(HestiaCommand),
-    
+
     #[command(about = "Restore files from a snapshot")]
-    Restore {
-        #[arg(help = "Snapshot ID to restore from")]
-        snapshot_id: String,
-        
-        #[arg(help = "Target directory for restore")]
-        target: String,
-        
-        #[arg(help = "Specific paths to restore")]
-        paths: Vec<String>,
-    },
-    
+    Restore(RestoreCommand),
+
     #[command(about = "Show repository statistics")]
-    Stats,
-    
+    Stats(StatsCommand),
+
     #[command(about = "Check repository integrity")]
-    Check,
-    
-    #[command(about = "Remove unused data and apply retention policies")]
-    Forget {
-        #[arg(long, help = "Keep last N snapshots")]
-        keep_last: Option<u32>,
-        
-        #[arg(long, help = "Keep daily snapshots for N days")]
-        keep_daily: Option<u32>,
-        
-        #[arg(long, help = "Keep weekly snapshots for N weeks")]
-        keep_weekly: Option<u32>,
-        
-        #[arg(long, help = "Keep monthly snapshots for N months")]
-        keep_monthly: Option<u32>,
-        
-        #[arg(long, help = "Actually remove data (dry-run otherwise)")]
-        prune: bool,
-    },
-    
+    Check(CheckCommand),
+
     #[command(about = "List files in a snapshot")]
-    Ls {
-        #[arg(help = "Snapshot ID")]
-        snapshot_id: String,
-        
-        #[arg(help = "Path within snapshot")]
-        path: Option<String>,
-    },
+    Ls(LsCommand),
+
+    #[command(about = "Apply retention policies to snapshots")]
+    Forget(ForgetCommand),
+
+    #[command(about = "Remove unused data and reclaim space")]
+    Prune(PruneCommand),
+
+    #[command(about = "Compare two snapshots")]
+    Diff(DiffCommand),
+
+    #[command(about = "Extract a file from a snapshot to stdout")]
+    Dump(DumpCommand),
+
+    #[command(about = "Copy snapshots between repositories")]
+    Copy(CopyCommand),
+
+    #[command(about = "Run config-driven backup jobs")]
+    Job(JobCommand),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     init_tracing(cli.verbose, cli.quiet);
-    
+
     info!("Starting Ghostsnap");
-    
+
     match cli.command {
         Commands::Init(ref cmd) => cmd.run(&cli).await,
         Commands::Backup(ref cmd) => cmd.run(&cli).await,
         Commands::Snapshots(ref cmd) => cmd.run(&cli).await,
-        Commands::Hestia(ref cmd) => cmd.run(&cli).await,
-        Commands::Restore { ref snapshot_id, ref target, ref paths } => {
-            RestoreCommand::run(snapshot_id.clone(), target.clone(), paths.clone(), &cli).await
-        },
-        Commands::Stats => {
-            println!("Stats not yet implemented");
-            Ok(())
-        },
-        Commands::Check => {
-            println!("Check not yet implemented");
-            Ok(())
-        },
-        Commands::Forget { .. } => {
-            println!("Forget not yet implemented");
-            Ok(())
-        },
-        Commands::Ls { snapshot_id: _, path: _ } => {
-            println!("Ls not yet implemented");
-            Ok(())
-        },
+        Commands::Restore(ref cmd) => cmd.run(&cli).await,
+        Commands::Stats(ref cmd) => cmd.run(&cli).await,
+        Commands::Check(ref cmd) => cmd.run(&cli).await,
+        Commands::Ls(ref cmd) => cmd.run(&cli).await,
+        Commands::Forget(ref cmd) => cmd.run(&cli).await,
+        Commands::Prune(ref cmd) => cmd.run(&cli).await,
+        Commands::Diff(ref cmd) => cmd.run(&cli).await,
+        Commands::Dump(ref cmd) => cmd.run(&cli).await,
+        Commands::Copy(ref cmd) => cmd.run(&cli).await,
+        Commands::Job(ref cmd) => cmd.run(&cli).await,
     }
 }
 
@@ -132,11 +111,12 @@ fn init_tracing(verbose: bool, quiet: bool) {
     } else {
         "info"
     };
-    
+
     let subscriber = FmtSubscriber::builder()
         .with_env_filter(EnvFilter::new(format!("ghostsnap={}", level)))
         .finish();
-    
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Setting default subscriber failed");
+
+    // Ignore errors: a global subscriber may already be set (e.g. when the CLI
+    // is exercised from multiple integration tests in the same process).
+    let _ = tracing::subscriber::set_global_default(subscriber);
 }

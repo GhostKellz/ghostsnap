@@ -1,125 +1,238 @@
-# Ghostsnap
+<p align="center">
+  <img src="assets/ghostsnap-logo.png" alt="Ghostsnap Logo" width="200" height="200">
+</p>
 
-<div align="center">
-  <img src="assets/ghostsnap-logo.png" alt="Ghostsnap Logo" width="128" height="128">
+<h1 align="center">Ghostsnap</h1>
 
-**Backup CLI Tool for Modern Infrastructure**
+<p align="center">
+  <strong>Fast, Secure, Deduplicating Backup CLI for Linux</strong>
+</p>
 
-![rust](https://img.shields.io/badge/Rust-1.80+-brown?logo=rust)
-![status](https://img.shields.io/badge/status-alpha-orange)
-![license](https://img.shields.io/badge/license-MIT-blue)
-![ci](https://img.shields.io/github/actions/workflow/status/ghostkellz/ghostsnap/ci.yml)
-![issues](https://img.shields.io/github/issues/ghostkellz/ghostsnap)
-![prs](https://img.shields.io/github/issues-pr/ghostkellz/ghostsnap)
-
-</div>
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-B7410E?style=for-the-badge&logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux">
+  <img src="https://img.shields.io/badge/BLAKE3-4A154B?style=for-the-badge&logo=hashnode&logoColor=white" alt="BLAKE3">
+  <img src="https://img.shields.io/badge/ChaCha20-2E7D32?style=for-the-badge&logo=gnuprivacyguard&logoColor=white" alt="ChaCha20">
+  <img src="https://img.shields.io/badge/S3-569A31?style=for-the-badge&logo=amazons3&logoColor=white" alt="S3">
+  <img src="https://img.shields.io/badge/Azure-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white" alt="Azure">
+  <img src="https://img.shields.io/badge/SFTP-4D4D4D?style=for-the-badge&logo=openssh&logoColor=white" alt="SFTP">
+  <img src="https://img.shields.io/badge/Rclone-0078D7?style=for-the-badge&logo=icloud&logoColor=white" alt="Rclone">
+</p>
 
 ---
 
 ## Overview
 
-**Ghostsnap** is a fast, reliable, and developer-friendly backup CLI tool designed for modern cloud and self-hosted infrastructure. Think *restic, but simpler to configure and tailored for MinIO, Azure, Backblaze/Wasabi, and HestiaCP*.
+**Ghostsnap** is a fast, secure, deduplicating backup tool for Linux systems. Built in Rust for performance and safety, it provides encrypted backups with content-defined chunking for efficient storage.
 
-Built in **Rust** for performance and safety, Ghostsnap makes it easy to:
-
-* Back up websites, application data, and configs.
-* Push to S3-compatible stores (MinIO, Wasabi, Backblaze, etc.).
-* Integrate directly with **HestiaCP** for daily site backups.
-* Hook into **Zeke** and other Ghost projects for orchestration.
+Inspired by restic, Ghostsnap aims to be a reliable swiss-army knife for backups: back up filesystem paths, store backups locally or in object storage, and support practical self-hosted workflows.
 
 ---
 
 ## Features
 
-* 🔒 **Secure by default** – client-side encryption with modern ciphers.
-* 🪶 **Lightweight CLI** – single binary, no external runtime deps.
-* ☁️ **Cloud-native** – supports S3, Azure Blob, Backblaze, Wasabi.
-* 🗂 **Incremental snapshots** – deduplication & versioning.
-* ⏱ **Scheduled backups** – cron/systemd-ready.
-* 🧩 **Pluggable architecture** – extend storage backends easily.
-* 📦 **HestiaCP integration** – backup sites, DBs, configs directly.
+- **Encryption**: ChaCha20-Poly1305 authenticated encryption with Argon2id key derivation
+- **Deduplication**: FastCDC content-defined chunking with BLAKE3 hashing
+- **Repository targets**: Local filesystem, Amazon S3 (and S3-compatible: Wasabi, Backblaze B2, MinIO), Azure Blob Storage, native SFTP, Rclone (40+ providers)
+- **Incremental backups**: Only changed data is stored
+- **Snapshot management**: Tag, list, compare, and restore from any point in time
+- **Integrity verification**: BLAKE3 checksums on all data
+- **Repository maintenance**: `check`, `prune`, `forget`, `copy`, `stats`
+- **Config-driven jobs**: TOML-based job definitions with pre/post hooks and retention policies
+- **Progress tracking**: Real-time throughput, ETA, and completion status
+- **Unix metadata**: Permissions, ownership, hardlinks, symlinks, extended attributes, sparse files
 
 ---
 
 ## Installation
 
 ```bash
-# Clone the repo
-git clone https://github.com/ghostkellz/ghostsnap
+# Clone the repository
+git clone https://github.com/GhostKellz/ghostsnap
 cd ghostsnap
 
-# Build binary
+# Build release binary
 cargo build --release
 
-# Run CLI
-./target/release/ghostsnap --help
+# Install (optional)
+cp target/x86_64-unknown-linux-gnu/release/ghostsnap /usr/local/bin/
 ```
 
-Prebuilt binaries (Linux, macOS, Windows) will be available on [Releases](https://github.com/ghostkellz/ghostsnap/releases).
+Built with Rust (2024 edition). See [docs/getting-started/installation.md](docs/getting-started/installation.md) for details.
 
 ---
 
-## Usage
+## Quick Start
+
+### Local Repository
 
 ```bash
-# Initialize a repo on MinIO
-ghostsnap init s3:minio/ghost-backups
+# Initialize a local repository
+ghostsnap init /backup/repo
 
-# Backup a HestiaCP site
-ghostsnap backup /home/hestia/web/domain.com s3:minio/ghost-backups --tag=domain.com
+# Back up a directory
+ghostsnap --repo /backup/repo backup ~/documents --tag docs
 
 # List snapshots
-ghostsnap snapshots s3:minio/ghost-backups
+ghostsnap --repo /backup/repo snapshots
 
-# Restore from snapshot
-ghostsnap restore s3:minio/ghost-backups --tag=domain.com --target=/restore/path
+# Restore a snapshot
+ghostsnap --repo /backup/repo restore abc123 --target /restore
+
+# Check repository integrity
+ghostsnap --repo /backup/repo check
 ```
+
+### S3 Repository
+
+```bash
+# Initialize an S3 repository
+ghostsnap init --backend s3 --bucket my-bucket --prefix backups s3:my-bucket/backups
+
+# Back up to S3
+ghostsnap --repo s3:my-bucket/backups backup /data --tag daily
+
+# S3-compatible storage (MinIO, Wasabi, Backblaze B2)
+ghostsnap init --backend s3 --bucket my-bucket --endpoint https://s3.wasabisys.com s3:my-bucket
+```
+
+### Azure Repository
+
+```bash
+# Set Azure credentials
+export AZURE_STORAGE_KEY="your-storage-account-key"
+
+# Initialize an Azure repository
+ghostsnap init --backend azure --account-name mystorageaccount --container backups
+
+# Back up to Azure
+ghostsnap --repo azure:mystorageaccount/backups backup /data --tag daily
+```
+
+### SFTP Repository
+
+```bash
+# Set SFTP credentials (or use key-based auth via ~/.ssh)
+export SFTP_PASSWORD="your-password"
+
+# Initialize an SFTP repository
+ghostsnap init --backend sftp sftp:backup@host.example.com:22/backups/repo
+
+# Back up over SFTP
+ghostsnap --repo sftp:backup@host.example.com/backups/repo backup /data --tag daily
+```
+
+Host keys are verified against `~/.ssh/known_hosts` by default.
+
+### Rclone Repository (40+ Providers)
+
+```bash
+# Configure rclone first (one-time setup)
+rclone config  # Follow prompts to add a remote
+
+# Initialize repository via rclone
+ghostsnap init --backend rclone --remote gdrive --rclone-path backups/ghostsnap
+
+# Back up using rclone
+ghostsnap --repo rclone:gdrive/backups/ghostsnap backup /data --tag daily
+
+# Works with any rclone remote: Google Drive, Dropbox, OneDrive, SFTP, etc.
+```
+
+### Repository Maintenance
+
+```bash
+# Show repository statistics
+ghostsnap --repo /backup/repo stats
+
+# List files in a snapshot
+ghostsnap --repo /backup/repo ls abc123
+
+# Compare two snapshots
+ghostsnap --repo /backup/repo diff abc123 def456
+
+# Apply retention policy (keep last 7 daily, 4 weekly)
+ghostsnap --repo /backup/repo forget --keep-daily 7 --keep-weekly 4
+
+# Remove unreferenced data
+ghostsnap --repo /backup/repo prune
+
+# Copy snapshots to another repository
+ghostsnap --repo /backup/repo copy --repo2 /offsite/backup abc123
+```
+
+### Config-Driven Jobs
+
+```bash
+# Create a job config (/etc/ghostsnap/jobs.toml)
+# Run a backup job with pre/post hooks and retention
+ghostsnap job --config /etc/ghostsnap/jobs.toml run website-b2
+
+# List configured jobs
+ghostsnap job --config /etc/ghostsnap/jobs.toml list
+
+# Validate job configuration
+ghostsnap job --config /etc/ghostsnap/jobs.toml validate website-b2
+```
+
+See [docs/guides/website-backup.md](docs/guides/website-backup.md) for complete examples.
 
 ---
 
-## Roadmap
+## Commands
 
-**Current Status: Alpha (v0.1.0) → RC1 (v0.9.0)**
+| Command | Description |
+|---------|-------------|
+| `init` | Initialize a new repository |
+| `backup` | Create a new backup snapshot |
+| `restore` | Restore files from a snapshot |
+| `snapshots` | List snapshots in repository |
+| `ls` | List files in a snapshot |
+| `diff` | Compare two snapshots |
+| `dump` | Extract a file to stdout |
+| `check` | Verify repository integrity |
+| `stats` | Show repository statistics |
+| `forget` | Apply retention policies |
+| `prune` | Remove unreferenced data |
+| `copy` | Copy snapshots between repositories |
+| `job` | Run config-driven backup jobs |
 
-### Completed ✅
-* [x] Core cryptography (ChaCha20-Poly1305, BLAKE3, Argon2)
-* [x] Content-defined chunking (FastCDC)
-* [x] Repository structure and configuration
-* [x] Basic CLI scaffolding
-* [x] Backend abstraction layer
+---
 
-### In Progress 🚧
-* [ ] Complete backup/restore implementation
-* [ ] Pack management system
-* [ ] Index optimization
-* [ ] Backend integrations (S3, Azure, MinIO)
-* [ ] Comprehensive testing
+## Status
 
-### Planned for RC1 📋
-* [ ] HestiaCP integration
-* [ ] Full documentation
-* [ ] Security audit
-* [ ] Performance optimization
-* [ ] Binary releases (Linux, macOS, Windows)
-* [ ] Beta testing program
+**Core functionality is complete and tested:**
+- Local, S3, Azure Blob Storage, native SFTP, and Rclone repository targets
+- Full command set for backup, restore, and maintenance
+- Encryption, deduplication, and integrity verification
+- Repository locking for local repositories (see [locking docs](docs/usage/repository.md#repository-locking) for remote guidance)
+- S3-compatible storage: AWS, Wasabi, Backblaze B2, MinIO
+- Native SFTP with `known_hosts` host-key verification
+- Rclone: Google Drive, Dropbox, OneDrive, SFTP, and 40+ more providers
 
-**📚 For detailed roadmap see**: [TODO.md](TODO.md), [RC1_SUMMARY.md](RC1_SUMMARY.md), [QUICK_START_RC1.md](QUICK_START_RC1.md), [PRIORITY_MATRIX.md](PRIORITY_MATRIX.md)
+**In development:**
+- Remote repository locking (single-writer patterns documented, distributed locking pending)
+
+See [SECURITY.md](SECURITY.md) for security details.
+
+---
+
+## Documentation
+
+- [Getting Started](docs/getting-started/)
+- [Usage Guide](docs/usage/)
+- [Architecture](docs/architecture/)
+- [Storage Backends](docs/backends/)
+- [Development](docs/development/)
 
 ---
 
 ## Contributing
 
-We welcome contributions! Check out [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-1. Fork the repo
-2. Create a feature branch (`git checkout -b feature/awesome`)
-3. Commit your changes (`git commit -m 'Add awesome feature'`)
-4. Push to your branch (`git push origin feature/awesome`)
-5. Open a Pull Request 🚀
+Contributions are welcome. See [docs/development/contributing.md](docs/development/contributing.md).
 
 ---
 
 ## License
 
-Ghostsnap is licensed under the **MIT License**. See [LICENSE](LICENSE) for details.
-
+MIT License. See [LICENSE](LICENSE).

@@ -1,8 +1,8 @@
+use rand::Rng;
 use std::future::Future;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, warn};
-use rand::Rng;
 
 /// Configuration for retry behavior with exponential backoff
 #[derive(Debug, Clone)]
@@ -54,9 +54,9 @@ impl RetryConfig {
 
     /// Calculate backoff duration for a given attempt
     fn backoff_duration(&self, attempt: u32) -> Duration {
-        let base_duration = self.initial_backoff.as_millis() as f64
-            * self.backoff_multiplier.powi(attempt as i32);
-        
+        let base_duration =
+            self.initial_backoff.as_millis() as f64 * self.backoff_multiplier.powi(attempt as i32);
+
         let duration_ms = base_duration.min(self.max_backoff.as_millis() as f64) as u64;
         let mut duration = Duration::from_millis(duration_ms);
 
@@ -171,8 +171,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test]
     async fn test_retry_succeeds_eventually() {
@@ -192,8 +192,7 @@ mod tests {
             async move {
                 let count = attempts.fetch_add(1, Ordering::SeqCst);
                 if count < 2 {
-                    Err(ghostsnap_core::Error::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    Err(ghostsnap_core::Error::Io(std::io::Error::other(
                         "Temporary failure",
                     )))
                 } else {
@@ -225,8 +224,7 @@ mod tests {
             let attempts = attempts_clone.clone();
             async move {
                 attempts.fetch_add(1, Ordering::SeqCst);
-                Err::<i32, _>(ghostsnap_core::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                Err::<i32, _>(ghostsnap_core::Error::Io(std::io::Error::other(
                     "Persistent failure",
                 )))
             }

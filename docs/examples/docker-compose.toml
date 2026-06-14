@@ -1,0 +1,106 @@
+# Docker Compose Application Backup
+#
+# This example backs up a Docker Compose application with database dumps.
+#
+# Prerequisites:
+# 1. Set environment variables for your cloud provider
+# 2. Create password file
+# 3. Initialize repository
+#
+# Usage:
+#   ghostsnap job --config /opt/myapp/ghostsnap.toml run docker-app
+
+version = 1
+
+[defaults]
+password_file = "/etc/ghostsnap/password"
+
+[jobs.docker-app]
+# Repository location
+repository = "s3:backup-bucket/docker-app"
+
+# Paths to back up
+paths = [
+    "/opt/myapp/docker-compose.yml",
+    "/opt/myapp/.env",
+    "/opt/myapp/config"
+]
+
+# Extra paths for database dumps
+extra_paths = ["/var/backups/ghostsnap/myapp"]
+
+# Tags
+tags = [
+    "host:app-01",
+    "service:docker",
+    "stack:myapp",
+    "env:prod"
+]
+
+# Pre-backup: dump database from container
+pre_hook = """
+set -e
+mkdir -p /var/backups/ghostsnap/myapp
+
+# Dump PostgreSQL from container
+docker exec myapp-db pg_dump -U postgres myapp \
+  > /var/backups/ghostsnap/myapp/postgres.sql
+
+# Optional: export container config
+docker inspect myapp-web > /var/backups/ghostsnap/myapp/container-config.json
+"""
+
+# Post-backup: cleanup
+post_hook = "rm -rf /var/backups/ghostsnap/myapp"
+
+# Hook settings
+pre_hook_timeout = "15m"
+working_directory = "/opt/myapp"
+
+# Retention
+keep_daily = 7
+keep_weekly = 4
+prune = true
+
+
+# Multiple Docker stacks example
+[jobs.docker-wordpress]
+repository = "s3:backup-bucket/wordpress"
+paths = [
+    "/opt/wordpress/docker-compose.yml",
+    "/opt/wordpress/.env",
+    "/opt/wordpress/wp-content"
+]
+extra_paths = ["/var/backups/ghostsnap/wordpress"]
+tags = ["service:wordpress", "type:website"]
+
+pre_hook = """
+set -e
+mkdir -p /var/backups/ghostsnap/wordpress
+docker exec wordpress-db mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" wordpress \
+  > /var/backups/ghostsnap/wordpress/wordpress.sql
+"""
+
+post_hook = "rm -rf /var/backups/ghostsnap/wordpress"
+keep_daily = 7
+keep_weekly = 4
+prune = true
+
+
+[jobs.docker-postgres]
+repository = "s3:backup-bucket/postgres"
+paths = ["/opt/postgres"]
+extra_paths = ["/var/backups/ghostsnap/postgres"]
+tags = ["service:postgres", "type:database"]
+
+pre_hook = """
+set -e
+mkdir -p /var/backups/ghostsnap/postgres
+docker exec postgres pg_dumpall -U postgres \
+  > /var/backups/ghostsnap/postgres/all-databases.sql
+"""
+
+post_hook = "rm -rf /var/backups/ghostsnap/postgres"
+keep_hourly = 24
+keep_daily = 7
+prune = true

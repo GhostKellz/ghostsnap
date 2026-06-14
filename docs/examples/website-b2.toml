@@ -1,0 +1,86 @@
+# Website Backup to Backblaze B2
+#
+# This example backs up a typical Nginx website to Backblaze B2 via S3 compatibility.
+#
+# Prerequisites:
+# 1. Create a B2 bucket and application key
+# 2. Set environment variables:
+#    export AWS_ACCESS_KEY_ID="your-b2-key-id"
+#    export AWS_SECRET_ACCESS_KEY="your-b2-application-key"
+#    export AWS_ENDPOINT_URL="https://s3.us-west-004.backblazeb2.com"
+#
+# 3. Create password file:
+#    echo "your-secure-password" > /etc/ghostsnap/password
+#    chmod 600 /etc/ghostsnap/password
+#
+# 4. Initialize repository:
+#    ghostsnap init s3:my-b2-bucket/web-01
+#
+# Usage:
+#   ghostsnap job --config /etc/ghostsnap/jobs.toml run website-b2
+
+version = 1
+
+[defaults]
+password_file = "/etc/ghostsnap/password"
+
+[jobs.website-b2]
+# Repository location (B2 via S3 compatibility)
+repository = "s3:my-b2-bucket/web-01"
+
+# Paths to back up
+paths = [
+    "/etc/nginx",
+    "/var/www",
+    "/etc/letsencrypt"
+]
+
+# Extra paths for generated files (database dumps)
+extra_paths = ["/var/backups/ghostsnap/web-01"]
+
+# Tags for filtering and organization
+tags = [
+    "host:web-01",
+    "service:nginx",
+    "type:website",
+    "env:prod",
+    "target:b2"
+]
+
+# Exclude patterns
+exclude = [
+    "*/cache/*",
+    "*/tmp/*",
+    "*.tmp",
+    "*.log",
+    "node_modules",
+    ".git"
+]
+
+# Pre-backup: dump database to staging directory
+pre_hook = """
+set -e
+mkdir -p /var/backups/ghostsnap/web-01
+mysqldump --defaults-extra-file=/root/.my.cnf --single-transaction appdb \
+  > /var/backups/ghostsnap/web-01/appdb.sql
+"""
+
+# Post-backup: clean up staging directory
+post_hook = "rm -rf /var/backups/ghostsnap/web-01"
+
+# Hook configuration
+pre_hook_timeout = "10m"
+post_hook_timeout = "1m"
+shell = "/bin/bash"
+
+# Retention policy
+keep_daily = 7
+keep_weekly = 4
+keep_monthly = 6
+
+# Run prune after forget
+prune = true
+
+# Safety settings
+require_paths_exist = true
+stop_on_pre_hook_failure = true
