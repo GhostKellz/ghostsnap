@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a new capability, backend, workflow improvement, or command.
+title: "[feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What backup/restore problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the feature, command, or backend you want.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Deployment context if relevant — OS, storage target, dataset size, automation setup.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds, existing commands, or other tools (e.g. restic) you already tried.

@@ -1,0 +1,108 @@
+name: Bug report
+description: Report a backup/restore failure, data-integrity issue, backend problem, or crash.
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, capture the failing command with verbose logging:
+        ```bash
+        RUST_LOG=debug ghostsnap --repo <repo> <command> ... 2>&1 | tee ghostsnap-debug.log
+        ```
+        Never paste repository passwords, `AZURE_STORAGE_KEY`, `SFTP_PASSWORD`,
+        S3 credentials, or other secrets. Redact them from any logs you attach.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ghostsnap init ...
+        2. ghostsnap --repo ... backup ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: ghostsnap 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution / OS
+      placeholder: Arch Linux / Ubuntu 24.04
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - backup
+        - restore
+        - snapshots / retention (forget / prune)
+        - repository maintenance (check / stats / copy)
+        - encryption / key handling
+        - chunking / deduplication
+        - backend - local
+        - backend - S3 / S3-compatible (Wasabi / B2 / MinIO)
+        - backend - Azure Blob
+        - backend - SFTP
+        - backend - Rclone
+        - config-driven jobs
+        - install / packaging
+        - docs
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Repository backend in use
+      description: The storage target where the issue occurred.
+      options:
+        - local filesystem
+        - Amazon S3
+        - S3-compatible (Wasabi / Backblaze B2 / MinIO)
+        - Azure Blob Storage
+        - SFTP
+        - Rclone
+        - not backend-specific
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics and logs
+      description: Paste key `RUST_LOG=debug` output (secrets redacted). Include `ghostsnap --repo <repo> check` output if the repository may be affected.
+  - type: textarea
+    id: changes
+    attributes:
+      label: What changed before this started?
+      placeholder: |
+        - upgraded ghostsnap
+        - changed backend / endpoint
+        - rotated repository password
+        - moved / migrated the repository

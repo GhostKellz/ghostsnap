@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Rust workspace (cli, core, backends resolved from the root Cargo.lock).
+  # Minor + patch only — major bumps are reviewed by hand because backup
+  # correctness and the crypto/backend crates warrant manual verification.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      cargo-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Keeps CI workflow actions from drifting onto deprecated versions.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

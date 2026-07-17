@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/GhostKellz/ghostsnap/blob/main/SECURITY.md
+    about: Do NOT open a public issue for security problems — follow the private reporting process in SECURITY.md.
+  - name: Contributing & development setup
+    url: https://github.com/GhostKellz/ghostsnap/blob/main/docs/development/contributing.md
+    about: Build, test, formatting, and contribution workflow before opening a PR.
