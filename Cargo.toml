@@ -58,7 +58,7 @@ directories = "5.0"
 toml = "0.8"
 tempfile = "3.14"
 walkdir = "2.5"
-sha2 = "0.10"
+sha2 = "0.11"
 md5 = "0.7"
 
 [profile.release]
