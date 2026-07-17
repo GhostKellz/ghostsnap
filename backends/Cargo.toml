@@ -28,6 +28,6 @@ azure_storage_blob = { workspace = true }
 url = { workspace = true }
 md5 = { workspace = true }
 base64 = { workspace = true }
-sha1 = "0.10"
+sha1 = "0.11"
 hex = "0.4"
 urlencoding = "2.1"
