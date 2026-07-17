@@ -34,7 +34,7 @@ fastcdc = "3.1"
 ignore = "0.4"
 bytes = "1.11"
 futures = "0.3"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 # Disable the legacy `rustls` default feature (pulls vulnerable rustls 0.21 /
 # rustls-webpki 0.101); `default-https-client` already provides modern rustls-aws-lc.
 aws-sdk-s3 = { version = "1.108", default-features = false, features = [
