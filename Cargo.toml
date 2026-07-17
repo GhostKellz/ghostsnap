@@ -55,7 +55,7 @@ russh = { version = "0.61", default-features = false, features = ["flate2", "aws
 russh-sftp = "2.3"
 chrono = { version = "0.4", features = ["serde"] }
 directories = "5.0"
-toml = "0.8"
+toml = "1.1"
 tempfile = "3.14"
 walkdir = "2.5"
 sha2 = "0.10"
