@@ -38,7 +38,7 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 hostname = "0.4"
 flate2 = "1.0"
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
-bloomfilter = "1.0"
+bloomfilter = "3.0"
 globset = "0.4"
 
 [target.'cfg(unix)'.dependencies]
